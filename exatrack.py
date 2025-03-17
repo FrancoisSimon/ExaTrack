@@ -2043,5 +2043,65 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
     
     return new_transition_shapes, new_transition_rates
 
-
+def build_model(track_len, # maximum number of time points in the input tracks 
+                nb_states, # Number of states of their model
+                params, # recurrent parameters of the model
+                initial_params, # initial parameters of the model
+                transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
+                transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
+                batch_size, # number of tracks analysed at the same time
+                nb_dimensions = 2, # Number of dimensions of the tracks
+                sequence_length = 3, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
+                max_linking_distance = 3, # Maximum linking distance or standard deviation for the expected misslinking distance.
+                estimated_density = 0.001, # Estimated density of the sample. 
+                ):
+    
+    # Defining the hyperparameters of the model
+    dtype = 'float64'
+    
+    nb_obs_vars = 1 # number of dependend variables (the x, y, z dimension do not account as dependent variables in our model so keep this to 1)
+    nb_independent_vars = nb_dimensions # This accounts for variables that are independ and which follow the same relationships (e.g. the spatial dimensions in tracking). 
+    nb_hidden_vars = 2
+    nb_gaussians = nb_obs_vars + nb_hidden_vars
+        
+    inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
+    input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), dtype = dtype)
+    
+    #inputs = tracks
+    #input_mask = all_masks
+    
+    transposed_inputs = transpose_layer(dtype = dtype)(inputs, perm = [2, 1, 0, 3, 4, 5])
+    
+    Init_layer = Initial_layer_constraints(nb_states,
+                                           nb_gaussians,
+                                           nb_obs_vars,
+                                           nb_hidden_vars,
+                                           params,
+                                           initial_params,
+                                           max_linking_distance,
+                                           constraint_function,
+                                           sequence_length,
+                                           dtype = dtype)
+    
+    tensor1, initial_states = Init_layer(transposed_inputs)
+    
+    softmax_inv_Fractions = Init_layer.initial_fractions
+    log_ds = Init_layer.param_vars[:, 1]
+    anomalous_factors = Init_layer.param_vars[:, 2]
+    
+    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
+    
+    sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
+    sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
+    
+    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length, dtype = dtype)
+    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors)
+    
+    F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
+    outputs, All_states = F_layer(states)
+    
+    model = tf.keras.Model(inputs=(inputs, input_mask), outputs=outputs, name="Diffusion_model")
+    pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
+    
+    return model, pred_model
 
