@@ -154,6 +154,27 @@ model.compile(loss=MLE_loss, optimizer=adam, jit_compile = False)
 with tf.device('/GPU:0'):
     history1 = model.fit((tracks, all_masks), tracks, epochs = 500, batch_size = batch_size, callbacks=[get_parameters()], shuffle=False, verbose = 1) #, callbacks  = [l_callback])
 
+'''
+Extracting and saveing the model parameters (for now we keep the shape parameters fixed to 1)
+'''
+params = {'anomalous factors': model.weights[0][:, 2], 'Localization errors': np.exp(model.weights[0][:, 0]), 'd': np.exp(model.weights[0][:, 1]), 'transition rates': model.weights[4], 'q': np.exp(model.weights[0][:, 3]), 'transition shapes': model.weights[5]}
+
+parameter_values = np.concatenate([params['Localization errors'][:, None], params['d'][:, None], params['anomalous factors'][:, None], params['q'][:, None],  params['transition rates']*(1-np.identity(nb_states)), params['transition shapes']], axis = 1)
+
+rate_cols = []
+shape_cols = []
+for state in range(nb_states):
+    rate_cols = rate_cols + ['transition rate (per step) to state %s'%state]
+    shape_cols = shape_cols + ['transition shape (per step) to state %s'%state]
+
+parameters = pd.DataFrame(parameter_values, columns = ['Localization errors', 'diffusion length', 'anomalous parameter', 'anomalous speed variation'] + rate_cols + shape_cols)
+
+parameters.to_csv('Saved_parameters.csv')
+
+'''
+Computing the probabilities of each state
+'''
+
 state_preds = pred_model.predict((tracks, all_masks), batch_size = batch_size)
 
 plt.figure(figsize = (10,10))
@@ -170,24 +191,5 @@ for i in range(nb_rows):
         plt.plot(track[:, 0], track[:, 1], ':k')
         plt.scatter(track[:, 0], track[:, 1], c = preds[:,:3])
 plt.gca().set_aspect('equal', adjustable='box')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
