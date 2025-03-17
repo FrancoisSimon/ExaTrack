@@ -5,6 +5,14 @@ Created on Mon Feb 24 10:46:56 2025
 @author: Franc
 """
 
+
+import numpy as np
+import tensorflow as tf
+from exatrack import anomalous_diff_transition, transpose_layer, Initial_layer_constraints, Custom_RNN_layer, Final_layer, constraint_function, transition_param_function
+from matplotlib import pyplot as plt
+from tensorflow.keras.optimizers.schedules import LearningRateSchedule
+import pandas as pd
+
 track_len=20
 all_tracks, all_states, all_masks = anomalous_diff_transition(max_track_len=track_len,
                                                    nb_tracks = 1000,
@@ -180,7 +188,7 @@ state_preds = pred_model.predict((tracks, all_masks), batch_size = batch_size)
 plt.figure(figsize = (10,10))
 
 nb_rows = 5
-lim = 2.5
+lim = 0.7
 
 for i in range(nb_rows):
     for j in range(nb_rows):
@@ -191,5 +199,6 @@ for i in range(nb_rows):
         plt.plot(track[:, 0], track[:, 1], ':k')
         plt.scatter(track[:, 0], track[:, 1], c = preds[:,:3])
 plt.gca().set_aspect('equal', adjustable='box')
+
 
 
