@@ -4,10 +4,12 @@ This repository contains the ExaTrack project which makes the syntesis between o
 
 # Installation with anaconda
 ## To run ExaTrack on CPU with anaconda and spyder IDE:
+'''
 conda create -n PyExaTrack python=3.10.11
 conda activate PyExaTrack
 conda install spyder
-`pip install -r PATH\TO\requirements.txt`
+pip install -r PATH\TO\requirements.txt
+'''
 
 ## Running ExaTrack on GPU with anaconda and spyder IDE
 `conda create -n PyExaTrack python=3.10.11`
