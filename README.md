@@ -4,19 +4,27 @@ This repository contains the ExaTrack project which makes the syntesis between o
 
 # Installation with anaconda
 ## To run ExaTrack on CPU with anaconda and spyder IDE:
-'''
-conda create -n PyExaTrack python=3.10.11
-conda activate PyExaTrack
-conda install spyder
-pip install -r PATH\TO\requirements.txt
-'''
+
+`conda create -n PyExaTrack python=3.10.11`
+
+`conda activate PyExaTrack`
+
+`conda install spyder`
+
+`pip install -r PATH\TO\requirements.txt`
+
 
 ## Running ExaTrack on GPU with anaconda and spyder IDE
 `conda create -n PyExaTrack python=3.10.11`
+
 `conda activate PyExaTrack`
+
 `conda install spyder`
+
 `conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0`
+
 `pip install -r PATH\TO\requirements.txt`
+
 **WARNING**: On my hands, jit compilation fails with GPU computing. If using GPU parallelization, make sure to set `jit_compile=False` in the exatrack.py file.
 
 You can then open spyder from the anaconda-navigator GUI or with the command line `spyder`
