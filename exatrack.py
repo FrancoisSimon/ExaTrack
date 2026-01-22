@@ -1902,6 +1902,21 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
     
     return new_transition_shapes, new_transition_rates
 
+class transpose_layer(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        **kwargs):
+        super().__init__(**kwargs)
+        
+    def build(self, input_shape):
+        self.built = True
+   
+    def call(self, x, perm):
+        '''
+        input dimensions: time point, gaussian, track, state, observed variable
+        '''
+        return tf.transpose(x, perm = perm)
+
 def get_model_params(model):
     '''
     Function to get the parameters from the model
@@ -1933,7 +1948,8 @@ def build_model(track_len, # maximum number of time points in the input tracks
                 vary_initial_params = None,
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
-                vary_transition_rates = None
+                vary_transition_rates = None,
+                bayesian_inference = True,
                 ):
     
     # Defining the hyperparameters of the model
@@ -2320,5 +2336,246 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
     
     return model, pred_model
+
+
+def get_number_of_states(tracks,
+                         track_masks,
+                         params,
+                         initial_params,
+                         transition_shapes,
+                         transition_rates,
+                         initial_fractions,
+                         nb_dims,
+                         sequence_length,
+                         max_linking_distance,
+                         estimated_density,
+                         epochs,
+                         epoch_decay,
+                         batch_size,
+                         vary_params = None,
+                         vary_initial_params = None,
+                         vary_initial_fractions = None,
+                         vary_transition_shapes = None,
+                         vary_transition_rates = None,
+                         device = '/CPU:0',
+                         ):
+    
+    track_len = track_masks.shape[1]
+    nb_states = params.shape[0]
+    nb_tracks = track_masks.shape[0]
+
+    # Store results for all models
+    model_results = {}
+    current_nb_states = nb_states
+    
+    # Initial parameters for the full model
+    current_params = params.copy()
+    current_initial_params = initial_params.copy()
+    current_transition_shapes = transition_shapes.copy()
+    current_transition_rates = transition_rates.copy()
+    current_initial_fractions = initial_fractions.copy()
+    
+    while current_nb_states >= 1:
+        print(f"\n{'='*60}")
+        print(f"Training model with {current_nb_states} states")
+        print(f"{'='*60}")
+        
+        # Build and train model with current number of states
+        model, pred_model = build_model(
+            track_len,
+            current_nb_states,
+            current_params,
+            current_initial_params,
+            current_transition_rates,
+            current_transition_shapes,
+            current_initial_fractions,
+            batch_size,
+            nb_dims=nb_dims,
+            sequence_length=sequence_length,
+            max_linking_distance=max_linking_distance,
+            estimated_density=estimated_density,
+            vary_params=vary_params,
+            vary_initial_params=vary_initial_params,
+            vary_initial_fractions=vary_initial_fractions,
+            vary_transition_shapes=vary_transition_shapes,
+            vary_transition_rates=vary_transition_rates)
+        
+        # Compile and train
+        decay_step = epoch_decay * track_masks.shape[0] // batch_size
+        lr = WarmupLearningRateSchedule(10, 1/100, 0.01, decay_step)
+        adam = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0)
+        model.compile(loss=MLE_loss, optimizer=adam, jit_compile=False)
+        
+        with tf.device(device):
+            history = model.fit(
+                (tracks, track_masks), 
+                tracks, 
+                epochs=epochs, 
+                batch_size=batch_size, 
+                callbacks=[get_parameters()], 
+                shuffle=True, 
+                verbose=1
+            )
+        
+        # Calculate metrics for model selection
+        with tf.device(device):
+            final_preds = model.predict((tracks, track_masks), batch_size = batch_size) # history.history['loss'][-1]
+        log_likelihood = -MLE_loss(final_preds, final_preds)*nb_tracks  # Total log likelihood
+        
+        # Count parameters (excluding the mislinking state)
+        num_params = (
+            current_nb_states * 5 +  # params: LocErr, D, anomalous, q, model_type
+            current_nb_states * 1 +  # initial_params
+            current_nb_states +      # initial_fractions
+            current_nb_states ** 2 * 2  # transition rates and shapes
+        )
+        
+        # Calculate information criteria
+        aic = 2 * num_params - 2 * log_likelihood
+        bic = np.log(track_masks.shape[0]) * num_params - 2 * log_likelihood
+        
+        # Get fitted parameters
+        fitted_weights = model.get_weights()
+        fitted_params = fitted_weights[0].copy()
+        fitted_initial_params = fitted_weights[1].copy()
+        fitted_initial_fractions = fitted_weights[2].copy()
+        fitted_transition_rates = fitted_weights[4].copy()
+        fitted_transition_shapes = fitted_weights[5].copy()
+        model_results[6]['model'].summary()
+        # Store results
+        model_results[current_nb_states] = {
+            'log_likelihood': log_likelihood,
+            'aic': aic,
+            'bic': bic,
+            'num_params': num_params,
+            'loss_history': history.history['loss'],
+            'params': fitted_params,
+            'initial_params': fitted_initial_params,
+            'initial_fractions': fitted_initial_fractions,
+            'transition_rates': fitted_transition_rates,
+            'transition_shapes': fitted_transition_shapes,
+            'model': model,
+            'pred_model': pred_model
+        }
+        
+        print(f"Log-likelihood: {log_likelihood:.2f}")
+        print(f"AIC: {aic:.2f}, BIC: {bic:.2f}")
+        
+        # If we have more than 1 state, determine which state to remove
+        if current_nb_states > 1:
+            state_influences = []
+            
+            for state_to_remove in range(1,current_nb_states):
+                print(f"\nTesting removal of state {state_to_remove}")
+                
+                # Create reduced parameter sets (removing one state)
+                keep_states = [i for i in range(current_nb_states) if i != state_to_remove]
+                
+                reduced_params = fitted_params[keep_states]
+                reduced_initial_params = fitted_initial_params[keep_states]
+                
+                # Adjust fractions (renormalize after removing one state)
+                fractions_softmax = tf.math.softmax(fitted_initial_fractions[0])
+                reduced_fractions_values = fractions_softmax.numpy()[keep_states+[current_nb_states]]
+                reduced_fractions_values = reduced_fractions_values / reduced_fractions_values.sum()
+                reduced_initial_fractions = np.log(reduced_fractions_values / (1 - reduced_fractions_values)).reshape(1, -1)
+                
+                # Reduce transition matrices
+                reduced_transition_rates = fitted_transition_rates[np.ix_(keep_states, keep_states)]
+                reduced_transition_shapes = fitted_transition_shapes[np.ix_(keep_states, keep_states)]
+                
+                # Build reduced model
+                test_model, _ = build_model(
+                    track_len,
+                    current_nb_states - 1,
+                    reduced_params,
+                    reduced_initial_params,
+                    reduced_transition_rates,
+                    reduced_transition_shapes,
+                    reduced_initial_fractions,
+                    batch_size,
+                    nb_dims=nb_dims,
+                    sequence_length=sequence_length,
+                    max_linking_distance=max_linking_distance,
+                    estimated_density=estimated_density
+                )
+                
+                # Quick evaluation (fewer epochs for testing)
+                test_lr = WarmupLearningRateSchedule(5, 1/100, 0.03, decay_step/3)
+                test_adam = tf.keras.optimizers.Adam(learning_rate=test_lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0)
+                test_model.compile(loss=MLE_loss, optimizer=test_adam, jit_compile=False)
+                '''
+                with tf.device(device):
+                    test_history = test_model.fit(
+                        (tracks, track_masks), 
+                        tracks, 
+                        epochs=min(1,epochs//3),  # Fewer epochs for testing
+                        batch_size=batch_size, 
+                        shuffle=True, 
+                        verbose=0
+                    )
+                '''
+                with tf.device(device):
+                    test_preds = test_model.predict((tracks, track_masks), batch_size = batch_size) #-test_history.history['loss'][-1] * track_masks.shape[0]
+                test_likelihood = MLE_loss(test_preds, test_preds)
+                state_influences.append((state_to_remove, test_likelihood))
+                print(f"  Likelihood: {test_likelihood:.2f}")
+            
+            # Remove state with smallest influence (higher likelihood)
+            state_influences.sort(key=lambda x: x[1])
+            state_to_remove = state_influences[0][0]
+            
+            print(f"\n→ Removing state {state_to_remove} (least influence: {state_influences[0][1]:.2f})")
+            
+            # Prepare parameters for next iteration
+            keep_states = [i for i in range(current_nb_states) if i != state_to_remove]
+            current_params = fitted_params[keep_states]
+            current_initial_params = fitted_initial_params[keep_states]
+            
+            # Renormalize fractions
+            fractions_softmax = tf.math.softmax(fitted_initial_fractions[0])
+            reduced_fractions_values = fractions_softmax.numpy()[keep_states + [current_nb_states]]
+            reduced_fractions_values = reduced_fractions_values / reduced_fractions_values.sum()
+            current_initial_fractions = np.log(reduced_fractions_values / (1 - reduced_fractions_values)).reshape(1, -1)
+            
+            current_transition_rates = fitted_transition_rates[np.ix_(keep_states, keep_states)]
+            current_transition_shapes = fitted_transition_shapes[np.ix_(keep_states, keep_states)]
+            
+            current_nb_states -= 1
+        else:
+            break
+    
+    # Select best model based on BIC (or AIC)
+    best_nb_states = min(model_results.keys(), key=lambda k: model_results[k]['bic'])
+    
+    for k in range(1,7):
+        model_results[k]['log_likelihood'] = model_results[k]['log_likelihood']*nb_tracks
+    
+    log_likelihoods = np.array([model_results[k]['log_likelihood'] for k in np.sort(list(model_results.keys()))])
+    nb_params = np.array([model_results[k]['num_params'] for k in np.sort(list(model_results.keys()))])
+    
+    print(f"\n{'='*60}")
+    print(f"Model Selection Results:")
+    print(f"{'='*60}")
+    for n_states in sorted(model_results.keys(), reverse=True):
+        result = model_results[n_states]
+        print(f"{n_states} states: LL={result['log_likelihood']:.1f}, "
+              f"AIC={result['aic']:.1f}, BIC={result['bic']:.1f}")
+    
+    print(f"\n★ Best model: {best_nb_states} states (lowest BIC)")
+    
+    # Return best model and all results
+    best_model_info = model_results[best_nb_states]
+    
+    return {'best_nb_states': best_nb_states,
+            'best_model': best_model_info['model'],
+            'best_pred_model': best_model_info['pred_model'],
+            'best_params': best_model_info['params'],
+            'best_initial_params': best_model_info['initial_params'],
+            'best_initial_fractions': best_model_info['initial_fractions'],
+            'best_transition_rates': best_model_info['transition_rates'],
+            'best_transition_shapes': best_model_info['transition_shapes'],
+            'all_results': model_results}
+
 
 
