@@ -23,6 +23,7 @@ dt = 0.03
 
 dtype = 'float64'
 nb_states = 4
+nb_dims = 2
 '''
 Initialization of the model.
 The current model is not necessarly very robust to chosing wrong initial parameters.
@@ -43,18 +44,24 @@ transition_shapes and transition_rates: shape and rate parameters from on state 
 for now the shape parameters are kept fixed
 '''
 
-params = tf.constant([[np.log(0.02), np.log(0.0025), 0.1, np.log(0.0001)],
-                      [np.log(0.02), np.log(0.033), 0.05, np.log(0.00001)],
-                      [np.log(0.02), np.log(0.08), 0.001, np.log(0.00001)],
-                      [np.log(0.02), np.log(0.15), 0.001, np.log(0.00001)]], dtype = dtype)
+# The 5th column is the model type indicator: 0 = confined motion, 1 = directed motion
+params = tf.constant([[np.log(0.02), np.log(0.0025), 0.1, np.log(0.0001), 1],
+                      [np.log(0.02), np.log(0.033), 0.05, np.log(0.00001), 1],
+                      [np.log(0.02), np.log(0.08), 0.001, np.log(0.00001), 1],
+                      [np.log(0.02), np.log(0.15), 0.001, np.log(0.00001), 1]], dtype = dtype)
 
 initial_params = tf.constant([[np.log(22), np.log(0.05)],
                               [np.log(22), np.log(0.05)],
                               [np.log(22), np.log(0.05)],
-                              [np.log(22), np.log(0.05)]], dtype = dtype) 
+                              [np.log(22), np.log(0.05)]], dtype = dtype)
 
 transition_shapes = tf.ones((nb_states, nb_states), dtype = dtype)
 transition_rates = tf.ones((nb_states, nb_states), dtype = dtype)*0.01
+
+# initial_fractions: fraction of each state in logit scale (softmax to get fractions).
+# Length is nb_states+1 because the last entry represents the mislinking state.
+initial_fractions = np.ones((1, nb_states+1))
+initial_fractions[0,-1] = -1
 
 '''
 Data loading and formating to the proper format
@@ -63,7 +70,7 @@ Data loading and formating to the proper format
 # Inform the maximum track length used for the analysis (longer tracks are cut down to this track length)
 track_len = 40
 
-track_list, frames, opt_metrics = read_table(paths, # path of the file to read or list of paths to read multiple files.
+track_list, frames, track_ID_list, opt_metrics = read_table(paths, # path of the file to read or list of paths to read multiple files.
                                        lengths = np.arange(10,track_len+1), # number of positions per track accepted (take the first position if longer than max
                                        dist_th = np.inf, # maximum distance allowed for consecutive positions 
                                        frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
@@ -79,7 +86,7 @@ batch_size = 200
 nb_tracks = nb_tracks//batch_size*batch_size
 
 all_tracks, all_frames, all_masks = padding(track_list[:nb_tracks], frames[:nb_tracks])
-tracks = tf.constant(all_tracks[:,None, :, None, None, :nb_independent_vars], dtype)
+tracks = tf.constant(all_tracks[:,None, :, None, None, :nb_dims], dtype)
 
 '''
 Creation of the model
@@ -89,17 +96,18 @@ sequence_length = 3 # sequence length to allow without forcing fusion of sequenc
 max_linking_distance = 0.5 # maximum linking distance used for the linking algorithm
 estimated_density = 0.1 # estimated density of the sample (number of counts per distance unit per frame)
 
-model, pred_model = build_model(track_len, # maximum number of time points in the input tracks 
+model, pred_model = build_model(track_len, # maximum number of time points in the input tracks
                                 nb_states, # Number of states of their model
                                 params, # recurrent parameters of the model
                                 initial_params, # initial parameters of the model
                                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
+                                initial_fractions,
                                 batch_size = batch_size, # number of tracks analysed at the same time
-                                nb_dimensions = nb_dimensions,
+                                nb_dims = nb_dims,
                                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
                                 max_linking_distance = max_linking_distance, # Maximum linking distance or standard deviation for the expected misslinking distance.
-                                estimated_density = estimated_density, # Estimated density of the sample. 
+                                estimated_density = estimated_density, # Estimated density of the sample.
                                 )
 model.summary()
 

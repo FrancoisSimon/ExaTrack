@@ -56,27 +56,34 @@ max_linking_distance = 3 # Maximum linking distance or standard deviation for th
 estimated_density = 0.001 # Estimated density of the sample. 
 
 # Initial guesses on the model parameters, each row represents one state so len(params) and len(initial_params) must equal nb_states
-params = tf.constant([[np.log(0.01), np.log(0.001), -0.03, np.log(0.001)],
-                      [np.log(0.01), np.log(0.4), 0.2, np.log(0.0001)]], dtype = dtype)
+# The 5th column is the model type indicator: 0 = confined motion, 1 = directed motion
+params = tf.constant([[np.log(0.01), np.log(0.001), -0.03, np.log(0.001), 1],
+                      [np.log(0.01), np.log(0.4), 0.2, np.log(0.0001), 0]], dtype = dtype)
 initial_params = tf.constant([[np.log(8), np.log(0.05)],
                               [np.log(8), np.log(0.05)]], dtype = dtype) # col 0: spread of the position in the field of view, col 1: relation between the true position and the new anomalous variable
 
 transition_shapes = tf.ones((nb_states, nb_states), dtype = dtype)
 transition_rates = tf.ones((nb_states, nb_states), dtype = dtype)*0.08
 
+# initial_fractions: fraction of each state in logit scale (softmax to get fractions).
+# Length is nb_states+1 because the last entry represents the mislinking state.
+initial_fractions = np.ones((1, nb_states+1))
+initial_fractions[0,-1] = -1
+
 batch_size = nb_tracks
 
-model, pred_model = build_model(track_len, # maximum number of time points in the input tracks 
+model, pred_model = build_model(track_len, # maximum number of time points in the input tracks
                                 nb_states, # Number of states of their model
                                 params, # recurrent parameters of the model
                                 initial_params, # initial parameters of the model
                                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
+                                initial_fractions,
                                 batch_size = batch_size, # number of tracks analysed at the same time
-                                nb_dimensions = nb_dimensions,
+                                nb_dims = nb_dimensions,
                                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
                                 max_linking_distance = max_linking_distance, # Maximum linking distance or standard deviation for the expected misslinking distance.
-                                estimated_density = estimated_density, # Estimated density of the sample. 
+                                estimated_density = estimated_density, # Estimated density of the sample.
                                 )
 
 def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (None, 1)
