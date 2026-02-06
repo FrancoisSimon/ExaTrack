@@ -299,7 +299,7 @@ def generate_movie(track_list, time_list, state_list, average_photon_number, ave
             pixel_pos = pos / pixel_size
             nb_photons = np.random.poisson(average_photon_number)
             
-            movie = emit_photons(pixel_pos, nb_photons, movie, time, emission_std)
+            movie = emit_photons(pixel_pos, nb_photons, movie, time, emission_std, pixel_dims)
             nb_counts += 1
     return movie, nb_counts
 
@@ -2053,8 +2053,6 @@ def model_to_DataFrame(model, dt):
     for i in range(nb_states):
         for j in range(nb_states):
             if i != j:
-                Tr_shape = tf.math.exp(params['transition shapes'][i, j])
-                Tr_rate = tf.math.sigmoid(params['transition rates'], axis = 1)
                 colnames.append('Transition rate (per time unit) %s%s'%(i, j))
                 data.append(params['transition rates'][i, j])
 
@@ -2172,11 +2170,12 @@ def Model_finder(tracks,
         
         list(np.round(tf.math.softmax(model.weights[2][0]), 3))
         
-        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_params(model)
+        # Extract fitted weights directly from the model (same approach as the initial fit above)
+        params, initial_params, initial_fractions, _, transition_rates, transition_shapes = model.get_weights()
         LogLikelihood = - history.history['loss'][-1]
         loss_history = history.history['loss']
         model_ID = len(All_models)
-        All_models['Model %s'%model_ID] = {'params': params.numpy(), 'initial_params': initial_params.numpy(), 'initial_fractions': initial_fractions.numpy(), 'transition_shapes': transition_shapes.numpy(), 'transition_rates': transition_rates.numpy(), 'LogLikelihood': LogLikelihood, 'loss_history': loss_history}
+        All_models['Model %s'%model_ID] = {'params': params, 'initial_params': initial_params, 'initial_fractions': initial_fractions, 'transition_shapes': transition_shapes, 'transition_rates': transition_rates, 'LogLikelihood': LogLikelihood, 'loss_history': loss_history}
         
         print('Log Likelihood', LogLikelihood)
         print('params', params)
@@ -2441,7 +2440,6 @@ def get_number_of_states(tracks,
         fitted_initial_fractions = fitted_weights[2].copy()
         fitted_transition_rates = fitted_weights[4].copy()
         fitted_transition_shapes = fitted_weights[5].copy()
-        model_results[6]['model'].summary()
         # Store results
         model_results[current_nb_states] = {
             'log_likelihood': log_likelihood,
@@ -2547,9 +2545,6 @@ def get_number_of_states(tracks,
     
     # Select best model based on BIC (or AIC)
     best_nb_states = min(model_results.keys(), key=lambda k: model_results[k]['bic'])
-    
-    for k in range(1,7):
-        model_results[k]['log_likelihood'] = model_results[k]['log_likelihood']*nb_tracks
     
     log_likelihoods = np.array([model_results[k]['log_likelihood'] for k in np.sort(list(model_results.keys()))])
     nb_params = np.array([model_results[k]['num_params'] for k in np.sort(list(model_results.keys()))])
