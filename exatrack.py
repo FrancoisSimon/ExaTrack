@@ -21,6 +21,7 @@ from numba import njit, typed, prange, jit
 from scipy.stats import gamma
 from tensorflow.keras.optimizers.schedules import LearningRateSchedule
 
+import warnings
 import pandas as pd
 from glob import glob
 
@@ -208,7 +209,7 @@ def anomalous_diff_2D(track_len=20,
         angles[i] = angles[i-1] + d_angles[i]
     
     for i in range(len(positions)-1):
-        angle = angles[i-1]
+        angle = angles[i]
         pesistent_disp = np.array([np.cos(angle), np.sin(angle)]).T * velocity/nb_sub_steps
         positions[i+1] = positions[i] + pesistent_disp + disps[i]
         positions[i+1] = (1-conf_sub_force) *  positions[i+1] + conf_sub_force * anchor_positions[i]
@@ -333,7 +334,7 @@ def padding(track_list, frame_list):
     nb_tracks = len(track_list)
     padded_tracks = np.zeros((nb_tracks, max_len, track_list[0].shape[1]), dtype = track_list[0].dtype)
     padded_frames =  np.zeros((nb_tracks, max_len), dtype = frame_list[0].dtype)
-    mask = np.zeros((nb_tracks, max_len), dtype = track.dtype)
+    mask = np.zeros((nb_tracks, max_len), dtype = track_list[0].dtype)
 
     for i, track in enumerate(track_list):
         if track.shape[0]>=start_len:
@@ -343,7 +344,7 @@ def padding(track_list, frame_list):
             mask[i, :cur_len] = 1
             padded_frames[i, :cur_len] = frames
         else:
-            raise Warning('The minimal track length supported is 2 time points. Tracks of 1 time point were discarded.')
+            warnings.warn('The minimal track length supported is 2 time points. Tracks of 1 time point were discarded.')
     
     return padded_tracks, padded_frames, mask
 
@@ -367,7 +368,9 @@ def read_table(paths, # path of the file to read or list of paths to read multip
     
     if type(paths) == str or type(paths) == np.str_:
         paths = [paths]
-    
+
+    colnames = list(colnames)  # avoid mutating the caller's list
+
     tracks = []
     frames = []
     track_IDs = []
@@ -437,8 +440,8 @@ def read_table(paths, # path of the file to read or list of paths to read multip
                             for m in opt_colnames:
                                 opt_metrics[m].append(track[m].values[:l]) 
         
-        except :
-            print('problem with file :', path)
+        except Exception as e:
+            print('problem with file :', path, '-', e)
     
     if zero_disp_tracks and not remove_no_disp:
         print('Warning: some tracks show no displacements. To be checked if normal or not. These tracks can be removed with remove_no_disp = True')
@@ -1902,21 +1905,6 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
     
     return new_transition_shapes, new_transition_rates
 
-class transpose_layer(tf.keras.layers.Layer):
-    def __init__(
-        self,
-        **kwargs):
-        super().__init__(**kwargs)
-        
-    def build(self, input_shape):
-        self.built = True
-   
-    def call(self, x, perm):
-        '''
-        input dimensions: time point, gaussian, track, state, observed variable
-        '''
-        return tf.transpose(x, perm = perm)
-
 def get_model_params(model):
     '''
     Function to get the parameters from the model
@@ -2075,15 +2063,6 @@ class WarmupLearningRateSchedule(LearningRateSchedule):
         # Linear warmup
         decay_step = tf.reduce_max([step-self.decay_start, 0])
         return self.peak_lr*(1-tf.math.exp(-step/self.warmup_steps))*tf.math.exp(-self.decay_rate*decay_step)
-
-def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (None, 1)
-    #print(y_pred)
-    
-    max_LP = tf.math.reduce_max(y_pred, 1, keepdims = True)
-    reduced_LP = y_pred - max_LP
-    pred = tf.math.log(tf.math.reduce_sum(tf.math.exp(reduced_LP), 1, keepdims = True)) + max_LP
-    
-    return - tf.math.reduce_mean(pred) # sum over the spatial dimensions axis
 
 def logit(x):
     return -np.log(1/x-1)
