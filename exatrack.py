@@ -51,7 +51,7 @@ def anomalous_diff_transition(max_track_len=100,
         
     nb_states = len(velocities)
     if not np.all(np.array([len(Fs), len(Ds), len(velocities), len(angular_Ds), len(conf_forces), len(conf_Ds), len(conf_dists), len(transition_matrix)]) == nb_states):
-        raise ValueError('Fs, Ds, velocities, angular_Ds, conf_forces, conf_Ds, conf_dists and transition_matrix must all be arrays of the same lenght (one element per state)')
+        raise ValueError('Fs, Ds, velocities, angular_Ds, conf_forces, conf_Ds, conf_dists and transition_matrix must all be arrays of the same length (one element per state)')
     # diff + persistent motion + elastic confinement
     
     cum_Fs = np.zeros(nb_states)
