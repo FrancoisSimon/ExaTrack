@@ -777,6 +777,126 @@ def get_all_sequences(sequence_length, nb_states):
     all_sequences = all_sequences[:, ::-1]
     return all_sequences
 
+class log_normal_parameter_sampling(tf.keras.layers.Layer):
+    '''
+    param_stds = None
+    initial_param_std = None
+    rate_stds = None
+    shape_stds = None
+    fraction_stds = None
+    '''
+    def __init__(self,
+                 nb_states,
+                 params,
+                 initial_params,
+                 transition_rates,
+                 transition_shapes,
+                 initial_fractions,
+                 param_stds = None,
+                 initial_param_std = None,
+                 rate_stds = None,
+                 shape_stds = None,
+                 fraction_stds = None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        std_certainty = 1
+        if type(param_stds) == type(None):
+            param_stds = params[:, :4] - std_certainty*np.log(10)
+        if type(initial_param_std) == type(None):
+            initial_param_std = initial_params[:,:1] - std_certainty*np.log(10)
+        if type(rate_stds) == type(None):
+            rate_stds = transition_rates - std_certainty*np.log(10)
+        if type(shape_stds) == type(None):
+            shape_stds = transition_shapes - std_certainty*np.log(10)
+        if type(fraction_stds) == type(None):
+            fraction_stds = initial_fractions - std_certainty*np.log(10)
+        
+        self.initial_mean_values = tf.math.exp(tf.concat([tf.reshape(params[:, :4], nb_states*4), 
+                                 tf.reshape(initial_params[:,:1], nb_states),
+                                 tf.reshape(transition_rates, nb_states**2),
+                                 tf.reshape(transition_shapes, nb_states**2),
+                                 initial_fractions[0]], 0)).numpy()
+        
+        stds = tf.math.exp(tf.concat([tf.reshape(param_stds[:, :4], nb_states*4), 
+                          tf.reshape(initial_param_std[:,:1], nb_states),
+                          tf.reshape(rate_stds, nb_states**2),
+                          tf.reshape(shape_stds, nb_states**2),
+                          fraction_stds[0]], 0))
+        
+        self.initial_cholsky_factor = np.array(tf.linalg.diag(stds))
+        self.nb_variables = stds.shape[0]
+        self.model_types = params[:, 4:]
+    
+    def build(self, input_shape):
+        self.mean_values = tf.Variable(self.initial_mean_values,  dtype = dtype, name = 'recurrence_variables')
+        self.cholsky_factor = tf.Variable(self.initial_cholsky_factor,  dtype = dtype, name = 'recurrence_variables')
+        self.built = True
+   
+    def call(self, x, perm):
+        '''
+        sample the model parameters and return them
+        '''
+        nb_states = self.nb_states
+        cholsky_factor = tf.linalg.band_part(self.cholsky_factor, -1, 0)
+        #cov = cholsky_factor * tf.transpose(cholsky_factor)
+        
+        z = tf.random.normal([self.nb_variables], dtype = dtype)
+        sample = self.mean_values + tf.linalg.matvec(cholsky_factor, z)
+        log_samples = tf.math.log(sample)
+        
+        sampled_params = tf.reshape(log_samples[:nb_states*4], (nb_states, 4))
+        sampled_params = tf.concat((sampled_params, self.model_types), axis = 1)
+        
+        sampled_initial_params = log_samples[nb_states*4:nb_states*5][:,None]
+        
+        sampled_transition_rates = tf.reshape(log_samples[nb_states*5:nb_states*5+nb_states**2], (nb_states, nb_states))
+        sampled_transition_shapes = tf.reshape(log_samples[nb_states*5+nb_states**2:nb_states*5+2*nb_states**2], (nb_states, nb_states))
+        
+        sampled_initial_fractions = log_samples[nb_states*5+2*nb_states**2:][None]
+        
+        return sampled_params, sampled_initial_params, sampled_transition_rates, sampled_transition_shapes, sampled_initial_fractions
+
+@tf.function(jit_compile=jit_compile)
+def log_normal_parameter_sampling_function(
+                 nb_states,
+                 mean_values,
+                 cholsky_factor,
+                 model_types,
+                 dtype):
+    
+    '''
+    sample the model parameters and return them
+    '''
+    cholsky_factor = tf.linalg.band_part(cholsky_factor, -1, 0)
+    #cov = cholsky_factor * tf.transpose(cholsky_factor)
+    
+    nb_variables = cholsky_factor.shape[0]
+    z = tf.random.normal([nb_variables], dtype = dtype)
+    log_samples = mean_values + tf.linalg.matvec(cholsky_factor, z)
+    #samples = tf.math.exp(log_samples)
+    
+    sampled_params = tf.reshape(log_samples[:nb_states*4], (nb_states, 4))
+    sampled_params = tf.concat((sampled_params, model_types), axis = 1)
+    
+    sampled_initial_params = log_samples[nb_states*4:nb_states*5][:,None]
+    
+    sampled_transition_rates = tf.reshape(log_samples[nb_states*5:nb_states*5+nb_states**2], (nb_states, nb_states))
+    sampled_transition_shapes = tf.reshape(log_samples[nb_states*5+nb_states**2:nb_states*5+2*nb_states**2], (nb_states, nb_states))
+    
+    sampled_initial_fractions = log_samples[nb_states*5+2*nb_states**2:][None]
+    
+    return sampled_params, sampled_initial_params, sampled_transition_rates, sampled_transition_shapes, sampled_initial_fractions
+
+
+'''
+param_stds = None
+initial_param_std = None
+rate_stds = None
+shape_stds = None
+fraction_stds = None
+self = tf.keras.layers.Layer()
+'''
+
 class Initial_layer_constraints(tf.keras.layers.Layer):
     def __init__(
         self,
@@ -787,18 +907,65 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         params,
         initial_params,
         initial_fractions,
+        transition_rates,
+        transition_shapes,
         max_linking_distance,
         constraint_function,
         vary_params = None,
         vary_initial_params = None,
         vary_initial_fractions = None,
+        param_stds = None,
+        initial_param_std = None,
+        rate_stds = None,
+        shape_stds = None,
+        fraction_stds = None,
         sequence_length = 3,
+        Bayesian_inference = True,
         **kwargs):
         
         super().__init__(**kwargs)
         
         dtype = self.dtype
         
+        self.Bayesian_inference = Bayesian_inference
+        
+        if Bayesian_inference:
+            std_certainty = 1
+            if type(param_stds) == type(None):
+                param_stds = params[:, :4] - std_certainty*np.log(10)
+            if type(initial_param_std) == type(None):
+                initial_param_std = initial_params[:,:1] - std_certainty*np.log(10)
+            if type(rate_stds) == type(None):
+                rate_stds = transition_rates - std_certainty*np.log(10)
+            if type(shape_stds) == type(None):
+                shape_stds = transition_shapes - std_certainty*np.log(10)
+            if type(fraction_stds) == type(None):
+                fraction_stds = initial_fractions - std_certainty*np.log(10)
+            
+            initial_mean_values = np.exp(np.concatenate([np.reshape(params[:, :4], nb_states*4), 
+                                     np.reshape(initial_params[:,:1], nb_states),
+                                     np.reshape(transition_rates, nb_states**2),
+                                     np.reshape(transition_shapes, nb_states**2),
+                                     initial_fractions[0]], 0))
+            
+            stds = tf.math.exp(np.concatenate([np.reshape(param_stds[:, :4], nb_states*4), 
+                              np.reshape(initial_param_std[:,:1], nb_states),
+                              np.reshape(rate_stds, nb_states**2),
+                              np.reshape(shape_stds, nb_states**2),
+                              fraction_stds[0]], 0))
+            
+            #E(Y_i) = np.exp(mu_i + sigma_ii/2)
+            #var(Y)ij = np.exp(mu_i + mu_j + (sigma_ii + sigma_jj)/2) * (np.exp(sigma_ij) - 1)
+            
+            diag_variance = np.log(1+(stds/initial_mean_values)**2)
+            self.initial_cholsky_factor = np.diag(diag_variance**0.5)
+            self.initial_mean_values = np.log(initial_mean_values) - 0.5*diag_variance
+            self.nb_variables = stds.shape[0]
+            self.model_types = params[:, 4:]
+        else:
+            self.transition_rates = transition_rates
+            self.transition_shapes = transition_shapes
+            
         if type(vary_params) == type(None):
             vary_params = np.ones(params.shape, dtype = dtype)
         
@@ -839,11 +1006,16 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         initial_fractions = (np.random.rand(1, nb_states+1)*0+1)
         initial_fractions[0,-1] = -1
         '''
-        self.param_vars = tf.Variable(self.params,  dtype = dtype, name = 'recurrence_variables')
-        self.initial_param_vars = tf.Variable(self.initial_params,  dtype = dtype, name = 'initial_variables', trainable = True)
-        self.max_linking_distance_param = tf.Variable(self.max_linking_distance, dtype = dtype, name = 'max linking distance', trainable = False)
-        initial_fractions = self.initial_fractions
-        self.initial_fractions = tf.Variable(initial_fractions, dtype = dtype, name = 'Fractions', trainable = True)
+        if self.Bayesian_inference :
+            self.mean_values = tf.Variable(self.initial_mean_values,  dtype = dtype, name = 'recurrence_variables')
+            self.cholsky_factor = tf.Variable(self.initial_cholsky_factor,  dtype = dtype, name = 'recurrence_variables')
+        
+        else:
+            self.param_vars = tf.Variable(self.params,  dtype = dtype, name = 'recurrence_variables')
+            self.initial_param_vars = tf.Variable(self.initial_params,  dtype = dtype, name = 'initial_variables', trainable = True)
+            self.max_linking_distance_param = tf.Variable(self.max_linking_distance, dtype = dtype, name = 'max linking distance', trainable = False)
+            initial_fractions = self.initial_fractions
+            self.initial_fractions = tf.Variable(initial_fractions, dtype = dtype, name = 'Fractions', trainable = True)
     
     def call(self, inputs):
         '''
@@ -856,16 +1028,28 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         dtype = self.dtype
         constraint_function = self.constraint_function
         
-        param_vars = self.param_vars
-        initial_param_vars = self.initial_param_vars
         nb_states = self.nb_states
-        max_linking_distance = self.max_linking_distance_param
+        max_linking_distance = self.max_linking_distance
         vary_params = self.vary_params
         vary_initial_params = self.vary_initial_params
-        initial_fractions = tf.math.softmax(self.initial_fractions)
         vary_initial_fractions = self.vary_initial_fractions
         
         nb_dims = inputs.shape[-1]
+        if self.Bayesian_inference:
+            mean_values = self.mean_values
+            cholsky_factor = self.cholsky_factor
+            model_types = self.model_types
+            param_vars, initial_param_vars, transition_rates, transition_shapes, initial_fractions = log_normal_parameter_sampling_function(nb_states, mean_values, cholsky_factor, model_types, dtype)
+            #self.param_vars = param_vars
+            #self.initial_param_vars = initial_param_vars
+            #self.initial_fractions = initial_fractions
+            initial_fractions = tf.math.softmax(initial_fractions)
+        else:
+            param_vars = self.param_vars
+            initial_param_vars = self.initial_param_vars
+            initial_fractions = tf.math.softmax(self.initial_fractions)
+            transition_rates = self.transition_rates
+            transition_shapes = self.transition_shapes
         
         param_vars = vary_params * param_vars + (1 - vary_params) * tf.stop_gradient(param_vars)
         initial_param_vars = vary_initial_params * initial_param_vars + (1 - vary_initial_params) * tf.stop_gradient(initial_param_vars)
@@ -933,6 +1117,8 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
                                                              nb_dims,
                                                              dtype = dtype)
         
+        current_hidden_var_coefs[:, 0]
+        
         transition_hidden_var_coefs = transition_hidden_var_coefs/transition_Gaussian_stds
         transition_biases = transition_biases/transition_Gaussian_stds[:,:,:]
         
@@ -951,9 +1137,9 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         
         Log_factors = nb_dims * Log_factors
         transition_Log_factors = nb_dims * transition_Log_factors
-        initial_states = [Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases]
+        initial_states = [Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes]
   
-        return inputs, initial_states
+        return initial_states, initial_fractions, param_vars
 
     def compute_scaling_factors(self, param_vars, initial_param_vars):
         '''
@@ -1034,6 +1220,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     transition_probas = transition_probas*transition_mask + non_transition_probas*(1-transition_mask)
     # Then, we update the log probability  
     all_LP = LP2 + tf.math.log(transition_probas) # + reshaped_transition_Log_factors
+    
     '''
     Once we performed transitions on the current states, we want to reshape transition_Prev_coefs,
     transition_Prev_biases and transition_LP to have a shape (nb_tracks, nb_states) instead of
@@ -1171,20 +1358,22 @@ sequence_phase_2 = recurrent_sequence_phase_2
 density = 0.001
 inputs = sliced_inputs
 mask = sliced_mask
-Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
+#Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes = initial_states
+Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes = initial_states
+
 nb_states = 2
 inputs[:,:,2]
 '''
 
 class Custom_RNN_layer(tf.keras.layers.Layer):
     
-    def __init__(self, nb_tracks, transition_shapes, transition_rates, density, nb_states, sequence_phase_1, sequence_phase_2, transition_sequence, transition_param_function, sequence_length = 3, vary_transition_shapes = None, vary_transition_rates = None, **kwargs):
+    def __init__(self, nb_tracks, density, nb_states, sequence_phase_1, sequence_phase_2, transition_sequence, transition_param_function, sequence_length = 3, vary_transition_shapes = None, vary_transition_rates = None, **kwargs):
         
         if type(vary_transition_rates) == type(None):
-            vary_transition_rates = tf.ones(transition_rates.shape, dtype = dtype)
+            vary_transition_rates = tf.ones((nb_states, nb_states), dtype = dtype)
         
         if type(vary_transition_shapes) == type(None):
-            vary_transition_shapes = tf.ones(transition_shapes.shape, dtype = dtype)
+            vary_transition_shapes = tf.ones((nb_states, nb_states), dtype = dtype)
         
         self.sequence_phase_1 = sequence_phase_1
         self.sequence_phase_2 = sequence_phase_2
@@ -1192,7 +1381,6 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         self.nb_states = nb_states + 1
         self.sequence_length = sequence_length
         self.nb_tracks = nb_tracks
-        self.initial_transition_params = [transition_shapes, transition_rates]
         self.transition_param_function = transition_param_function
         self.density = density
         self.vary_transition_shapes = vary_transition_shapes
@@ -1201,10 +1389,10 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
     
     def build(self, input_shape):
         nb_states = self.nb_states
-        transition_shapes, transition_rates = self.initial_transition_params
+        #transition_shapes, transition_rates = self.initial_transition_params
         sequence_length = self.sequence_length
-        self.transition_rates = tf.Variable(transition_rates, dtype = dtype, name = 'Transition rates', trainable = True)
-        self.transition_shapes = tf.Variable(transition_shapes, dtype = dtype, name = 'Transition shape', trainable = True, constraint=lambda w: tf.where(tf.greater_equal(w, 0), w, 0.0001))
+        #self.transition_rates = tf.Variable(transition_rates, dtype = dtype, name = 'Transition rates', trainable = True)
+        #self.transition_shapes = tf.Variable(transition_shapes, dtype = dtype, name = 'Transition shape', trainable = True, constraint=lambda w: tf.where(tf.greater_equal(w, 0), w, 0.0001))
         
         indices = tf.stack([tf.repeat(tf.constant(list(np.arange(nb_states))*sequence_length), nb_states), tf.concat([tf.range(nb_states)]*nb_states*sequence_length, 0)], axis = 1)
         transition_mask = tf.cast((indices[:,0] - indices[:,1])!=0, dtype = dtype)[None]
@@ -1214,14 +1402,12 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         self.built = True
     
     @tf.function(jit_compile=False)
-    def call(self, inputs, mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir): # inputs = current positions, states = outputs of the previous layer, needs to be initialized correctly
+    def call(self, inputs, mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, Fractions, transition_rates, transition_shapes, anomalous_factors, isdir): # inputs = current positions, states = outputs of the previous layer, needs to be initialized correctly
         
         nb_tracks = self.nb_tracks
         sequence_phase_1 = self.sequence_phase_1
         sequence_phase_2 = self.sequence_phase_2
         transition_sequence = self.transition_sequence
-        transition_rates = self.transition_rates
-        transition_shapes = self.transition_shapes
         transition_mask = self.transition_mask
         nb_states = self.nb_states
         indices = self.indices
@@ -1231,7 +1417,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         vary_transition_rates = self.vary_transition_rates
         
         ds = tf.math.exp(log_ds)
-        Fs = tf.math.softmax(softmax_inv_Fractions[0,:-1])
+        Fs = Fractions[0]
         effective_ds = ds + 2 * tf.math.exp(anomalous_factors) * isdir  # the coefficient 2 is rationalized by the fact that the directed motion is underestimated by a factor 2**0.5 and to which I add another factor 2**0.5 to account for the fact that directed motion is more exploratory than brownian motion
         
         transition_shapes = vary_transition_shapes * transition_shapes + (1 - vary_transition_shapes) * tf.stop_gradient(transition_shapes)
@@ -1252,7 +1438,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         transition_var = tf.repeat(transition_shapes/transition_rates**2, nb_tracks, axis=0)[:, :nb_states**2]
         gamma_dist_mean = tf.repeat(transition_shapes/transition_rates, nb_tracks, axis=0) # We initialize the transition 
         gamma_dist_var = tf.repeat((transition_shapes/transition_rates)**2, nb_tracks, axis=0)
-        
+                
         # state vector of dims : nb_tracks, nb_states (+1 for the transition state)*sequence length, sequence length, nb_states
         states = tf.range(0, nb_states*sequence_length, dtype = 'int32')%nb_states
         states = tf.repeat(states[:,None], sequence_length, axis = 1)
@@ -1341,6 +1527,9 @@ class Final_layer(tf.keras.layers.Layer):
         pred_states = tf.reduce_sum(weights[:,:,None, None]*last_states, 1)
         All_states = tf.concat((All_states, pred_states), axis = 1)
         output = LP
+        
+        #if tf.math.is_nan(tf.math.reduce_sum(output)):
+        #    raise ValueError('model stopped due to nan loss')
         
         return output, All_states
 
@@ -1894,8 +2083,8 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
     mislinking_dwell_time = tf.concat((mislinking_dwell_time, [0.1]), axis = 0)
         
     #mislinking_rates = tf.constant([0.078,0.146], dtype = dtype)[:, None] # density 1 -> rates 0.052 0.052 
-    mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None])# density 0.1 -> rates 0.052 0.052 
-
+    mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None]-1e-10)# density 0.1 -> rates 0.052 0.052 
+    
     new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 1)
     new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time[None]), axis = 0)
     
@@ -1903,15 +2092,102 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
 
 def get_model_raw_params(model):
     '''
-    Function to get the raw (log-space) parameters from the model
+    Function to get the parameters from the model
     '''
-    weights = model.weights
-    params = weights[0]
-    initial_params = weights[1]
-    initial_fractions = weights[2]
-    transition_shapes = weights[5]
-    transition_rates = weights[4]
-    return params, initial_params, initial_fractions, transition_shapes, transition_rates
+    if model.Bayesian_inference:
+        init_layer = None
+        for layer in model.layers:
+            if isinstance(layer, Initial_layer_constraints):
+                init_layer = layer
+                break
+            
+        if init_layer is None:
+            print("Initial_layer_constraints not found")
+            return
+        model_types = init_layer.model_types
+        mean_values = init_layer.mean_values
+        cholsky_factor = init_layer.cholsky_factor
+        model_parameters = {'Model types': model_types, 'Mean values': mean_values, 'cholsky factor': cholsky_factor}
+        
+    else:
+        weights = model.weights
+        nb_states = weights[-1].shape[0]
+        transition_shapes = tf.math.exp(weights[5])
+        transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
+        model_types = weights[0][:, -1].numpy().astype(int)
+        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
+        model_parameters = {'Model types': model_types_str,'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
+
+    return model_parameters
+
+def get_model_params(model):
+    '''
+    Function to get the parameters from the model
+    '''
+    if model.Bayesian_inference:
+        init_layer = None
+        for layer in model.layers:
+            if isinstance(layer, Initial_layer_constraints):
+                init_layer = layer
+                break
+            
+        if init_layer is None:
+            print("Initial_layer_constraints not found")
+            return
+    
+        # Sample parameters multiple times
+        mean_values = init_layer.mean_values
+        cholsky_factor = init_layer.cholsky_factor
+        model_types = init_layer.model_types
+        nb_states = model_types.shape[0]
+        
+        sampled_params_list = []
+        sampled_fractions_list = []
+        sampled_rates_list = []
+        sampled_shapes_list = []
+        
+        for _ in range(10000):
+            param_vars, initial_param_vars, transition_rates, transition_shapes, initial_fractions = log_normal_parameter_sampling_function(
+                nb_states, mean_values, cholsky_factor, model_types, dtype)
+            sampled_params_list.append(param_vars.numpy())
+            sampled_fractions_list.append(tf.math.softmax(initial_fractions).numpy())
+            sampled_rates_list.append(tf.math.softmax(transition_rates, axis=1).numpy())
+            sampled_shapes_list.append(tf.math.exp(transition_shapes).numpy())
+        
+        # Calculate statistics
+        sampled_params = np.array(sampled_params_list)
+        sampled_fractions = np.array(sampled_fractions_list)
+        sampled_rates = np.array(sampled_rates_list)
+        sampled_shapes = np.array(sampled_shapes_list)
+        
+        anomalous_factors = tf.sigmoid(sampled_params[:, :, 2])*(1-sampled_params[:, :, 4]) + np.exp(sampled_params[:, :, 2])*sampled_params[:, :, 4]
+        # Extract mean and std for each parameter type
+        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
+
+        model_parameters = {'Model types': model_types_str,
+            'anomalous factors (mean)': np.mean(anomalous_factors, axis=0),
+            'anomalous factors (std)': np.std(anomalous_factors, axis=0),
+            'Localization errors (mean)': np.mean(np.exp(sampled_params[:, :, 0]), axis=0),
+            'Localization errors (std)': np.std(np.exp(sampled_params[:, :, 0]), axis=0),
+            'd (mean)': np.mean(np.exp(sampled_params[:, :, 1]), axis=0),
+            'd (std)': np.std(np.exp(sampled_params[:, :, 1]), axis=0),
+            'transition rates (mean)': np.mean(sampled_rates, axis=0),
+            'transition rates (std)': np.std(sampled_rates, axis=0),
+            'transition shapes (mean)': np.mean(sampled_shapes, axis=0),
+            'transition shapes (std)': np.std(sampled_shapes, axis=0),
+            'Fractions (mean)': np.mean(sampled_fractions, axis=0)[0],
+            'Fractions (std)': np.std(sampled_fractions, axis=0)[0]}
+        
+    else:
+        weights = model.weights
+        nb_states = weights[-1].shape[0]
+        transition_shapes = tf.math.exp(weights[5])
+        transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
+        model_types = weights[0][:, -1].numpy().astype(int)
+        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
+        model_parameters = {'Model type': model_types_str,'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
+
+    return model_parameters
 
 def build_model(track_len, # maximum number of time points in the input tracks 
                 nb_states, # Number of states of their model
@@ -1930,7 +2206,7 @@ def build_model(track_len, # maximum number of time points in the input tracks
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
                 vary_transition_rates = None,
-                bayesian_inference = True,
+                Bayesian_inference = False,
                 ):
     
     # Defining the hyperparameters of the model
@@ -1956,28 +2232,33 @@ def build_model(track_len, # maximum number of time points in the input tracks
                                            params,
                                            initial_params,
                                            initial_fractions,
+                                           transition_rates,
+                                           transition_shapes,
                                            max_linking_distance,
                                            constraint_function,
                                            vary_params = vary_params,
                                            vary_initial_params = vary_initial_params,
                                            vary_initial_fractions = vary_initial_fractions,
                                            sequence_length = sequence_length,
+                                           Bayesian_inference = Bayesian_inference,
                                            dtype = dtype)
+    #self = Init_layer
     
-    tensor1, initial_states = Init_layer(transposed_inputs)
+    initial_states, initial_fractions, param_vars = Init_layer(transposed_inputs)
     
-    softmax_inv_Fractions = Init_layer.initial_fractions
-    log_ds = Init_layer.param_vars[:, 1]
-    anomalous_factors = Init_layer.param_vars[:, 2]
-    isdir = Init_layer.param_vars[:, 4]
+    Fractions = initial_fractions[:, :-1]
+    log_ds = param_vars[:-1, 1]
+    anomalous_factors = param_vars[:-1, 2]
+    isdir = param_vars[:-1, 4]
     
-    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
+    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes = initial_states
     
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
-    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
-    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir)
+    layer = Custom_RNN_layer(batch_size, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
+    #self = layer
+    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, Fractions, transition_rates, transition_shapes, anomalous_factors, isdir)
     
     F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer(states)
@@ -1985,16 +2266,22 @@ def build_model(track_len, # maximum number of time points in the input tracks
     model = tf.keras.Model(inputs=(inputs, input_mask), outputs=outputs, name="Diffusion_model")
     pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
     
+    if Bayesian_inference:
+        model.Bayesian_inference = True
+        pred_model.Bayesian_inference = True
+
     return model, pred_model
 
 def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (None, 1)
     #print(y_pred)
-    
     max_LP = tf.math.reduce_max(y_pred, 1, keepdims = True)
     reduced_LP = y_pred - max_LP
     pred = tf.math.log(tf.math.reduce_sum(tf.math.exp(reduced_LP), 1, keepdims = True)) + max_LP
-    
-    return - tf.math.reduce_mean(pred) # sum over the spatial dimensions axis
+    loss = - tf.math.reduce_mean(pred)
+    if tf.math.is_nan(loss):
+        raise ValueError('model stopped due to nan loss')
+        
+    return loss # sum over the spatial dimensions axis
 
 class get_parameters(tf.keras.callbacks.Callback):
     def __init__(self, layer_name='params'):
@@ -2003,24 +2290,67 @@ class get_parameters(tf.keras.callbacks.Callback):
     
     def on_epoch_end(self, epoch, logs=None):
         # Retrieve the weights of the model
-        weights = self.model.weights
-        nb_states = weights[-1].shape[0]
-        transition_shapes = tf.math.exp(weights[5])
-        transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
-        model_types = weights[0][:, -1].numpy().astype(int)
-        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-        params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
+        init_layer = None
+        for layer in self.model.layers:
+            if isinstance(layer, Initial_layer_constraints):
+                init_layer = layer
+                break
+            
+        if init_layer is None:
+            print("Initial_layer_constraints not found")
+            return
+        
+        if init_layer.Bayesian_inference:
+            
+            # Sample parameters multiple times
+            mean_values = init_layer.mean_values
+            cholsky_factor = init_layer.cholsky_factor
+            model_types = init_layer.model_types
+            nb_states = model_types.shape[0]
+            
+            sampled_params_list = []
+            sampled_fractions_list = []
+            sampled_rates_list = []
+            sampled_shapes_list = []
+            
+            for _ in range(10000):
+                param_vars, initial_param_vars, transition_rates, transition_shapes, initial_fractions = log_normal_parameter_sampling_function(
+                    nb_states, mean_values, cholsky_factor, model_types, dtype)
+                sampled_params_list.append(param_vars.numpy())
+                sampled_fractions_list.append(tf.math.softmax(initial_fractions).numpy())
+                sampled_rates_list.append(tf.math.softmax(transition_rates, axis=1).numpy())
+                sampled_shapes_list.append(tf.math.exp(transition_shapes).numpy())
+            
+            # Calculate statistics
+            sampled_params = np.array(sampled_params_list)
+            sampled_fractions = np.array(sampled_fractions_list)
+            sampled_rates = np.array(sampled_rates_list)
+            sampled_shapes = np.array(sampled_shapes_list)
+            
+            # Extract mean and std for each parameter type
+            params = {'anomalous factors (mean)': list(np.round(
+                    np.mean(tf.sigmoid(sampled_params[:, :, 2])*(1-sampled_params[:, :, 4]) + 
+                            np.exp(sampled_params[:, :, 2])*sampled_params[:, :, 4], axis=0), 4)),
+                'anomalous factors (std)': list(np.round(
+                    np.std(tf.sigmoid(sampled_params[:, :, 2])*(1-sampled_params[:, :, 4]) + 
+                           np.exp(sampled_params[:, :, 2])*sampled_params[:, :, 4], axis=0), 4)),
+                'Localization errors (mean)': list(np.round(np.mean(np.exp(sampled_params[:, :, 0]), axis=0), 4)),
+                'Localization errors (std)': list(np.round(np.std(np.exp(sampled_params[:, :, 0]), axis=0), 4)),
+                'd (mean)': list(np.round(np.mean(np.exp(sampled_params[:, :, 1]), axis=0), 4)),
+                'd (std)': list(np.round(np.std(np.exp(sampled_params[:, :, 1]), axis=0), 4)),
+                'transition rates (mean)': list(np.round(np.mean(sampled_rates, axis=0).reshape(nb_states**2), 3)),
+                'transition rates (std)': list(np.round(np.std(sampled_rates, axis=0).reshape(nb_states**2), 3)),
+                'transition shapes (mean)': list(np.round(np.mean(sampled_shapes, axis=0).reshape(nb_states**2), 2)),
+                'transition shapes (std)': list(np.round(np.std(sampled_shapes, axis=0).reshape(nb_states**2), 2)),
+                'Fractions (mean)': list(np.round(np.mean(sampled_fractions, axis=0)[0], 3)),
+                'Fractions (std)': list(np.round(np.std(sampled_fractions, axis=0)[0], 3))}
+        else:
+            weights = self.model.weights
+            nb_states = weights[-1].shape[0]
+            transition_shapes = tf.math.exp(weights[5])
+            transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
+            params = {'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
         print(params)
-
-def get_model_params(model):
-    weights = model.weights
-    nb_states = weights[-1].shape[0]
-    transition_shapes = tf.math.exp(weights[5])
-    transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
-    model_types = weights[0][:, -1].numpy().astype(int)
-    model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-    param_dict = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
-    return param_dict
 
 def model_to_DataFrame(model, dt):
     weights = model.weights
@@ -2096,7 +2426,12 @@ def Model_finder(tracks,
                  vary_transition_shapes = None,
                  vary_transition_rates = None):
     '''
-    If a state is not found immobile, we test the alternative state hypothesis
+    Our model does not automatically changes the types of motion as we found this 
+    inefficient due to local maxima around null velocities or confinement factors.
+    In this algorithm, we try different combinations of types of motion to find the
+    best model by moximizing the likelihood. In order to limit the computation time, 
+    this algorithm assumes that the likelihood as a function of the type of motion 
+    for state i is independent of the types of motion assumed for the other states. 
     '''
     nb_states = params.shape[0]
     track_len = masks.shape[1]
@@ -2156,7 +2491,7 @@ def Model_finder(tracks,
         
         list(np.round(tf.math.softmax(model.weights[2][0]), 3))
         
-        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_raw_params(model)
+        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_params(model)
         LogLikelihood = - history.history['loss'][-1]
         loss_history = history.history['loss']
         model_ID = len(All_models)
@@ -2234,7 +2569,7 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
         mislinking_dwell_time = tf.concat((mislinking_dwell_time, [0.1]), axis = 0)
         
         #mislinking_rates = tf.constant([0.078,0.146], dtype = dtype)[:, None] # density 1 -> rates 0.052 0.052 
-        mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None])# density 0.1 -> rates 0.052 0.052 
+        mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None]-1e-10)# density 0.1 -> rates 0.052 0.052 
     
         new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 1)
         new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time[None]), axis = 0)
@@ -2306,12 +2641,11 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
-    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
-    
+    layer = Custom_RNN_layer(batch_size, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
     #self = layer
     # inputs = sliced_inputs
     # mask = sliced_mask#
-    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir)
+    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, transition_rates, transition_shapes, anomalous_factors, isdir)
     
     F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer(states)
@@ -2320,6 +2654,7 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
     
     return model, pred_model
+
 
 def get_number_of_states(tracks,
                          params,
@@ -2330,20 +2665,20 @@ def get_number_of_states(tracks,
                          nb_dims,
                          sequence_length,
                          max_linking_distance,
-                         estimated_density,
+                         estimated_density=1e-8,
                          epochs = 100,
                          epoch_decay = 70,
                          learning_rate = 0.02,
                          decay_rate = 0.005,
                          batch_size = 100,
                          track_masks = None,
-                         vary_params = None,
-                         vary_initial_params = None,
-                         vary_initial_fractions = None,
+                         vary_params = True,
+                         vary_initial_params = True,
+                         vary_initial_fractions = True,
                          vary_transition_shapes = False,
-                         vary_transition_rates = None,
-                         device = '/GPU:0'):
-    
+                         vary_transition_rates = True,
+                         device = '/CPU:0',
+                         verbose = 1):
     if type(tracks)==list:
         tracks, _, track_masks = padding(tracks)
     else:
@@ -2391,10 +2726,12 @@ def get_number_of_states(tracks,
             vary_initial_fractions=vary_initial_fractions,
             vary_transition_shapes=vary_transition_shapes,
             vary_transition_rates=vary_transition_rates)
-        tracks.shape
-        preds = model.predict((tracks, track_masks), batch_size=batch_size)
-        print('initial preditions:', MLE_loss(preds, preds))
-                
+        
+        # Initial loss
+        if verbose:
+            preds = model.predict((tracks, track_masks), batch_size=batch_size)
+            print('initial preditions:', MLE_loss(preds, preds))
+        
         # Compile and train
         decay_step = epoch_decay * track_masks.shape[0] // batch_size
         lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_step)
@@ -2404,12 +2741,12 @@ def get_number_of_states(tracks,
         with tf.device(device):
             history = model.fit(
                 (tracks, track_masks), 
-                tracks,
-                epochs=epochs,
-                batch_size=batch_size,
+                tracks, 
+                epochs=epochs, 
+                batch_size=batch_size, 
                 callbacks=[get_parameters()], 
                 shuffle=True, 
-                verbose=1)
+                verbose=verbose)
         
         # Calculate metrics for model selection
         with tf.device(device):
@@ -2418,9 +2755,9 @@ def get_number_of_states(tracks,
         
         # Count parameters (excluding the mislinking state)
         num_params = (current_nb_states * 5 +  # params: LocErr, D, anomalous, q, model_type
-                      current_nb_states * 1 +  # initial_params
-                      current_nb_states +      # initial_fractions
-                      current_nb_states ** 2 * 2 ) # transition rates and shapes
+            current_nb_states * 1 +  # initial_params
+            current_nb_states +      # initial_fractions
+            current_nb_states ** 2 * 2)  # transition rates and shapes
         
         # Calculate information criteria
         aic = 2 * num_params - 2 * log_likelihood
@@ -2433,9 +2770,9 @@ def get_number_of_states(tracks,
         fitted_initial_fractions = fitted_weights[2].copy()
         fitted_transition_rates = fitted_weights[4].copy()
         fitted_transition_shapes = fitted_weights[5].copy()
+        model_results[6]['model'].summary()
         # Store results
-        model_results[current_nb_states] = {
-            'log_likelihood': log_likelihood,
+        model_results[current_nb_states] = {'log_likelihood': log_likelihood,
             'aic': aic,
             'bic': bic,
             'num_params': num_params,
@@ -2487,8 +2824,7 @@ def get_number_of_states(tracks,
                     nb_dims=nb_dims,
                     sequence_length=sequence_length,
                     max_linking_distance=max_linking_distance,
-                    estimated_density=estimated_density
-                )
+                    estimated_density=estimated_density)
                 
                 with tf.device(device):
                     test_preds = test_model.predict((tracks, track_masks), batch_size = batch_size) #-test_history.history['loss'][-1] * track_masks.shape[0]
