@@ -24,6 +24,7 @@ from tensorflow.keras.optimizers.schedules import LearningRateSchedule
 import pandas as pd
 from glob import glob
 
+import scipy
 from scipy.spatial.transform import Rotation as R
 jit_compile = False
 
@@ -95,7 +96,7 @@ def anomalous_diff_transition(max_track_len=100,
         states = []
         
         n = 0
-        while n < nb_burning_steps*nb_sub_steps:
+        while n <= nb_burning_steps*nb_sub_steps:
             state = next_state
             transitions = np.argmin(CPD_transition_mat[state, :] < np.random.rand(nb_states)[:, None], axis=1)
             next_state = np.argmin(transitions)
@@ -117,7 +118,7 @@ def anomalous_diff_transition(max_track_len=100,
             if nb_dims < 3:
                 segment = anomalous_diff_2D(track_len=l+1,
                                          LocErr=0, # localization error in x, y and z (even if not used)
-                                         D = D,
+                                         D = D*scipy.stats.chi2.rvs(50, 0, 0.02),
                                          velocity = velocity/nb_sub_steps,
                                          angular_D = angular_D,
                                          conf_force = conf_force/nb_sub_steps,
@@ -128,6 +129,9 @@ def anomalous_diff_transition(max_track_len=100,
                                          nb_sub_steps = 1,
                                          initial_positions = initial_positions)
                 
+                #np.mean(scipy.stats.chi2.rvs(50, 0, 0.02, 100000))
+                #np.std(scipy.stats.chi2.rvs(50, 0, 0.02, 100000))
+
                 segment = segment[:,:nb_dims]
                 
             elif nb_dims == 3:
@@ -402,7 +406,6 @@ def read_table(paths, # path of the file to read or list of paths to read multip
             data = data.drop(data[None_ID].index)
         
         data = data[colnames + opt_colnames]
-        
         zero_disp_tracks = 0
             
         try:
@@ -429,11 +432,12 @@ def read_table(paths, # path of the file to read or list of paths to read multip
                         
                         elif len(track_mat) > np.max(lengths):
                             l = np.max(lengths)
-                            tracks.append(track_mat[:l, 0:2])
-                            frames.append(track_mat[:l, 2])
-                            track_IDs.append(track_mat[:l, 3])
-                            for m in opt_colnames:
-                                opt_metrics[m].append(track[m].values[:l]) 
+                            for k in range(len(track_mat)//np.max(lengths)):
+                                l = np.max(lengths)
+                                tracks[str(l)].append(track_mat[l*k:l*(k+1), 0:2])
+                                frames[str(l)].append(track_mat[l*k:l*(k+1), 2])
+                                for m in opt_colnames:
+                                    opt_metrics[m][str(l)].append(track[m].values[l*k:l*(k+1)]) 
         
         except Exception as e:
             import logging
@@ -444,137 +448,6 @@ def read_table(paths, # path of the file to read or list of paths to read multip
     if zero_disp_tracks and not remove_no_disp:
         print('Warning: some tracks show no displacements. To be checked if normal or not. These tracks can be removed with remove_no_disp = True')
     return tracks, frames, track_IDs, opt_metrics
-
-
-def read_table(paths, # path of the file to read or list of paths to read multiple files.
-               lengths = np.arange(100,101), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
-               frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
-               colnames = ['POSITION_X', 'POSITION_Y', 'FRAME', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
-               opt_colnames = [], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
-               remove_no_disp = True,
-               split_long_tracks = False):
-    
-    if type(paths) == str or type(paths) == np.str_:
-        paths = [paths]
-
-    tracks = {}
-    frames = {}
-    opt_metrics = {}
-    for m in opt_colnames:
-        opt_metrics[m] = {}
-    nb_peaks = 0
-    for l in lengths:
-        tracks[str(l)] = []
-        frames[str(l)] = []
-        for m in opt_colnames:
-            opt_metrics[m][str(l)] = []
-    
-    for path in paths:
-        
-        if fmt == 'csv':
-            data = pd.read_csv(path, sep=',')
-        elif fmt == 'pkl':
-            data = pd.read_pickle(path)
-        else:
-            data = pd.read_csv(path, sep = fmt)
-        
-        if not (type(colnames[3]) == str or type(colnames[3]) == np.str_):
-            # in this case we remove the NA values for simplicity
-            None_ID = (data[colnames[3]] == 'None') + pd.isna(data[colnames[3]])
-            data = data.drop(data[np.any(None_ID,1)].index)
-                
-            new_ID = data[colnames[3][0]].astype(str)
-            
-            for k in range(1,len(colnames[3])):
-                new_ID = new_ID + '_' + data[colnames[3][k]].astype(str)
-            data['unique_ID'] = new_ID
-            colnames[3] = 'unique_ID'        
-        try:
-            # in this case, peaks without an ID are assumed alone and are added a unique ID, only works if ID are integers
-            None_ID = (data[colnames[3]] == 'None' ) + pd.isna(data[colnames[3]])
-            max_ID = np.max(data[colnames[3]][(data[colnames[3]] != 'None' ) * (pd.isna(data[colnames[3]]) == False)].astype(int))
-            data.loc[None_ID, colnames[3]] = np.arange(max_ID+1, max_ID+1 + np.sum(None_ID))
-        except:
-            None_ID = (data[colnames[3]] == 'None' ) + pd.isna(data[colnames[3]])
-            data = data.drop(data[None_ID].index)
-        
-        data = data[colnames + opt_colnames]
-        
-        zero_disp_tracks = 0
-            
-        try:
-            for ID, track in data.groupby(colnames[3]):
-                track = track.sort_values(colnames[2], axis = 0)
-                track_mat = track.values[:,:3].astype('float64')
-                dists2 = (track_mat[1:, :2] - track_mat[:-1, :2])**2
-                if remove_no_disp:
-                    if np.mean(dists2==0)>0.05:
-                        continue
-                dists = np.sum(dists2, axis = 1)**0.5
-                if track_mat[0, 2] >= frames_boundaries[0] and track_mat[0, 2] <= frames_boundaries[1] : #and np.all(dists<dist_th):
-                    if not np.any(dists>dist_th):
-                        
-                        if np.any([len(track_mat)]*len(lengths) == np.array(lengths)):
-                            l = len(track)
-                            tracks[str(l)].append(track_mat[:, 0:2])
-                            frames[str(l)].append(track_mat[:, 2])
-                            for m in opt_colnames:
-                                opt_metrics[m][str(l)].append(track[m].values)
-                        elif len(track_mat) > np.max(lengths):
-                            if split_long_tracks:
-                                l = np.max(lengths)
-                                for k in range(len(track_mat)//np.max(lengths)):
-                                    l = np.max(lengths)
-                                    tracks[str(l)].append(track_mat[l*k:l*(k+1), 0:2])
-                                    frames[str(l)].append(track_mat[l*k:l*(k+1), 2])
-                                    for m in opt_colnames:
-                                        opt_metrics[m][str(l)].append(track[m].values[l*k:l*(k+1)]) 
-                            else:
-                                l = np.max(lengths)
-                                tracks[str(l)].append(track_mat[:l, 0:2])
-                                frames[str(l)].append(track_mat[:l, 2])
-                                for m in opt_colnames:
-                                    opt_metrics[m][str(l)].append(track[m].values[:l]) 
-                            
-                        elif len(track_mat) < np.max(lengths) and len(track_mat) > np.min(lengths) : # in case where lengths between min(lengths) and max(lentghs) are not all present:
-                            l_idx =   np.argmin(np.floor(len(track_mat) / lengths))-1
-                            l = lengths[l_idx]
-                            tracks[str(l)].append(track_mat[:l, 0:2])
-                            frames[str(l)].append(track_mat[:l, 2])
-        except :
-            print('problem with file :', path)
-        
-    for l in list(tracks.keys()):
-        if len(tracks[str(l)])>0:
-            print(l)
-            tracks[str(l)] = np.array(tracks[str(l)])
-            frames[str(l)] = np.array(frames[str(l)])
-            for m in opt_colnames:
-                opt_metrics[m][str(l)] = np.array(opt_metrics[m][str(l)])
-        else:
-            del tracks[str(l)], frames[str(l)]
-            for k, m in enumerate(opt_colnames):
-                del opt_metrics[m][str(l)]        
-                    
-    if zero_disp_tracks and not remove_no_disp:
-        print('Warning: some tracks show no displacements. To be checked if normal or not. These tracks can be removed with remove_no_disp = True')
-    
-    track_list = []
-    frame_list = []
-    opt_metric_lists = {}
-    for m in opt_metrics:
-        opt_metric_lists[m] = []
-    
-    for l in tracks:
-        track_list += list(tracks[l])
-        frame_list += list(frames[l])
-        for m in opt_metrics:
-            opt_metric_lists[m] += list(opt_metrics[m][l])
-
-    return track_list, frame_list, opt_metric_lists
-
 
 
 def ExaTrack_2_DataFrame(track_list, frame_list, track_ID_list, opt_metrics, state_preds, all_masks):

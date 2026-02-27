@@ -129,6 +129,9 @@ def anomalous_diff_transition(max_track_len=100,
                                          nb_sub_steps = 1,
                                          initial_positions = initial_positions)
                 
+                #np.mean(scipy.stats.chi2.rvs(50, 0, 0.02, 100000))
+                #np.std(scipy.stats.chi2.rvs(50, 0, 0.02, 100000))
+
                 segment = segment[:,:nb_dims]
                 
             elif nb_dims == 3:
@@ -403,7 +406,6 @@ def read_table(paths, # path of the file to read or list of paths to read multip
             data = data.drop(data[None_ID].index)
         
         data = data[colnames + opt_colnames]
-        
         zero_disp_tracks = 0
             
         try:
@@ -430,11 +432,12 @@ def read_table(paths, # path of the file to read or list of paths to read multip
                         
                         elif len(track_mat) > np.max(lengths):
                             l = np.max(lengths)
-                            tracks.append(track_mat[:l, 0:2])
-                            frames.append(track_mat[:l, 2])
-                            track_IDs.append(track_mat[:l, 3])
-                            for m in opt_colnames:
-                                opt_metrics[m].append(track[m].values[:l]) 
+                            for k in range(len(track_mat)//np.max(lengths)):
+                                l = np.max(lengths)
+                                tracks[str(l)].append(track_mat[l*k:l*(k+1), 0:2])
+                                frames[str(l)].append(track_mat[l*k:l*(k+1), 2])
+                                for m in opt_colnames:
+                                    opt_metrics[m][str(l)].append(track[m].values[l*k:l*(k+1)]) 
         
         except Exception as e:
             import logging
@@ -445,6 +448,7 @@ def read_table(paths, # path of the file to read or list of paths to read multip
     if zero_disp_tracks and not remove_no_disp:
         print('Warning: some tracks show no displacements. To be checked if normal or not. These tracks can be removed with remove_no_disp = True')
     return tracks, frames, track_IDs, opt_metrics
+
 
 def ExaTrack_2_DataFrame(track_list, frame_list, track_ID_list, opt_metrics, state_preds, all_masks):
     nb_rows = np.sum(all_masks).astype(int)
@@ -778,128 +782,6 @@ def get_all_sequences(sequence_length, nb_states):
     all_sequences = all_sequences[:, ::-1]
     return all_sequences
 
-class log_normal_parameter_sampling(tf.keras.layers.Layer):
-    '''
-    param_stds = None
-    initial_param_std = None
-    rate_stds = None
-    shape_stds = None
-    fraction_stds = None
-    '''
-    def __init__(self,
-                 nb_states,
-                 params,
-                 initial_params,
-                 transition_rates,
-                 transition_shapes,
-                 initial_fractions,
-                 param_stds = None,
-                 initial_param_std = None,
-                 rate_stds = None,
-                 shape_stds = None,
-                 fraction_stds = None,
-                 **kwargs):
-        super().__init__(**kwargs)
-        std_certainty = 1
-        if type(param_stds) == type(None):
-            param_stds = params[:, :4] - std_certainty*np.log(10)
-        if type(initial_param_std) == type(None):
-            initial_param_std = initial_params[:,:1] - std_certainty*np.log(10)
-        if type(rate_stds) == type(None):
-            rate_stds = transition_rates - std_certainty*np.log(10)
-        if type(shape_stds) == type(None):
-            shape_stds = transition_shapes - 4*std_certainty*np.log(10)
-        if type(fraction_stds) == type(None):
-            fraction_stds = initial_fractions - std_certainty*np.log(10)
-        
-        self.initial_mean_values = tf.math.exp(tf.concat([tf.reshape(params[:, :4], nb_states*4), 
-                                 tf.reshape(initial_params[:,:1], nb_states),
-                                 tf.reshape(transition_rates, nb_states**2),
-                                 tf.reshape(transition_shapes, nb_states**2),
-                                 initial_fractions[0]], 0)).numpy()
-        
-        stds = tf.math.exp(tf.concat([tf.reshape(param_stds[:, :4], nb_states*4), 
-                          tf.reshape(initial_param_std[:,:1], nb_states),
-                          tf.reshape(rate_stds, nb_states**2),
-                          tf.reshape(shape_stds, nb_states**2),
-                          fraction_stds[0]], 0))
-        
-        self.initial_cholsky_factor = np.array(tf.linalg.diag(stds))
-        self.nb_variables = stds.shape[0]
-        self.model_types = params[:, 4:]
-    
-    def build(self, input_shape):
-        self.mean_values = tf.Variable(self.initial_mean_values,  dtype = dtype, name = 'recurrence_variables')
-        self.cholsky_factor = tf.Variable(self.initial_cholsky_factor,  dtype = dtype, name = 'recurrence_variables')
-        self.built = True
-   
-    def call(self, x, perm):
-        '''
-        sample the model parameters and return them
-        '''
-        nb_states = self.nb_states
-        cholsky_factor = tf.linalg.band_part(self.cholsky_factor, -1, 0)
-        #cov = cholsky_factor * tf.transpose(cholsky_factor)
-        
-        z = tf.random.normal([self.nb_variables], dtype = dtype)
-        sample = self.mean_values + tf.linalg.matvec(cholsky_factor, z)
-        log_samples = tf.math.log(sample)
-        
-        sampled_params = tf.reshape(log_samples[:nb_states*4], (nb_states, 4))
-        sampled_params = tf.concat((sampled_params, self.model_types), axis = 1)
-        
-        sampled_initial_params = log_samples[nb_states*4:nb_states*5][:,None]
-        
-        sampled_transition_rates = tf.reshape(log_samples[nb_states*5:nb_states*5+nb_states**2], (nb_states, nb_states))
-        sampled_transition_shapes = tf.reshape(log_samples[nb_states*5+nb_states**2:nb_states*5+2*nb_states**2], (nb_states, nb_states))
-        
-        sampled_initial_fractions = log_samples[nb_states*5+2*nb_states**2:][None]
-        
-        return sampled_params, sampled_initial_params, sampled_transition_rates, sampled_transition_shapes, sampled_initial_fractions
-
-@tf.function(jit_compile=jit_compile)
-def log_normal_parameter_sampling_function(
-                 nb_states,
-                 mean_values,
-                 cholsky_factor,
-                 model_types,
-                 dtype):
-    
-    '''
-    sample the model parameters and return them
-    
-    To add: a argument to fix the standard deviation of fixed parameters to 0
-    '''
-    cholsky_factor = tf.linalg.band_part(cholsky_factor, -1, 0)
-    #cov = cholsky_factor * tf.transpose(cholsky_factor)
-    
-    nb_variables = cholsky_factor.shape[0]
-    z = tf.random.normal([nb_variables], dtype = dtype)
-    log_samples = mean_values + tf.linalg.matvec(cholsky_factor, z)
-    #samples = tf.math.exp(log_samples)
-    
-    sampled_params = tf.reshape(log_samples[:nb_states*4], (nb_states, 4))
-    sampled_params = tf.concat((sampled_params, model_types), axis = 1)
-    
-    sampled_initial_params = log_samples[nb_states*4:nb_states*5][:,None]
-    
-    sampled_transition_rates = tf.reshape(log_samples[nb_states*5:nb_states*5+nb_states**2], (nb_states, nb_states))
-    sampled_transition_shapes = tf.reshape(log_samples[nb_states*5+nb_states**2:nb_states*5+2*nb_states**2], (nb_states, nb_states))
-    
-    sampled_initial_fractions = log_samples[nb_states*5+2*nb_states**2:][None]
-    
-    return sampled_params, sampled_initial_params, sampled_transition_rates, sampled_transition_shapes, sampled_initial_fractions
-
-
-'''
-param_stds = None
-initial_param_std = None
-rate_stds = None
-shape_stds = None
-fraction_stds = None
-self = tf.keras.layers.Layer()
-'''
-
 class Initial_layer_constraints(tf.keras.layers.Layer):
     def __init__(
         self,
@@ -910,65 +792,18 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         params,
         initial_params,
         initial_fractions,
-        transition_rates,
-        transition_shapes,
         max_linking_distance,
         constraint_function,
         vary_params = None,
         vary_initial_params = None,
         vary_initial_fractions = None,
-        param_stds = None,
-        initial_param_std = None,
-        rate_stds = None,
-        shape_stds = None,
-        fraction_stds = None,
         sequence_length = 3,
-        Bayesian_inference = True,
         **kwargs):
         
         super().__init__(**kwargs)
         
         dtype = self.dtype
         
-        self.Bayesian_inference = Bayesian_inference
-        
-        if Bayesian_inference:
-            std_certainty = 1
-            if type(param_stds) == type(None):
-                param_stds = params[:, :4] - std_certainty*np.log(10)
-            if type(initial_param_std) == type(None):
-                initial_param_std = initial_params[:,:1] - std_certainty*np.log(10)
-            if type(rate_stds) == type(None):
-                rate_stds = transition_rates - std_certainty*np.log(10)
-            if type(shape_stds) == type(None):
-                shape_stds = transition_shapes - 4*std_certainty*np.log(10)
-            if type(fraction_stds) == type(None):
-                fraction_stds = initial_fractions - std_certainty*np.log(10)
-            
-            initial_mean_values = np.exp(np.concatenate([np.reshape(params[:, :4], nb_states*4), 
-                                     np.reshape(initial_params[:,:1], nb_states),
-                                     np.reshape(transition_rates, nb_states**2),
-                                     np.reshape(transition_shapes, nb_states**2),
-                                     initial_fractions[0]], 0))
-            
-            stds = tf.math.exp(np.concatenate([np.reshape(param_stds[:, :4], nb_states*4), 
-                              np.reshape(initial_param_std[:,:1], nb_states),
-                              np.reshape(rate_stds, nb_states**2),
-                              np.reshape(shape_stds, nb_states**2),
-                              fraction_stds[0]], 0))
-            
-            #E(Y_i) = np.exp(mu_i + sigma_ii/2)
-            #var(Y)ij = np.exp(mu_i + mu_j + (sigma_ii + sigma_jj)/2) * (np.exp(sigma_ij) - 1)
-            
-            diag_variance = np.log(1+(stds/initial_mean_values)**2)
-            self.initial_cholsky_factor = np.diag(diag_variance**0.5)
-            self.initial_mean_values = np.log(initial_mean_values) - 0.5*diag_variance
-            self.nb_variables = stds.shape[0]
-            self.model_types = params[:, 4:]
-        else:
-            self.transition_rates = transition_rates
-            self.transition_shapes = transition_shapes
-            
         if type(vary_params) == type(None):
             vary_params = np.ones(params.shape, dtype = dtype)
         
@@ -1009,19 +844,12 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         initial_fractions = (np.random.rand(1, nb_states+1)*0+1)
         initial_fractions[0,-1] = -1
         '''
-        if self.Bayesian_inference :
-            self.mean_values = tf.Variable(self.initial_mean_values,  dtype = dtype, name = 'recurrence_variables')
-            self.cholsky_factor = tf.Variable(self.initial_cholsky_factor,  dtype = dtype, name = 'recurrence_variables')
-        
-        else:
-            self.param_vars = tf.Variable(self.params,  dtype = dtype, name = 'recurrence_variables')
-            self.initial_param_vars = tf.Variable(self.initial_params,  dtype = dtype, name = 'initial_variables', trainable = True)
-            self.max_linking_distance_param = tf.Variable(self.max_linking_distance, dtype = dtype, name = 'max linking distance', trainable = False)
-            initial_fractions = self.initial_fractions
-            self.initial_fractions = tf.Variable(initial_fractions, dtype = dtype, name = 'Fractions', trainable = True)
-            self.transition_rates = tf.Variable(self.transition_rates, dtype = dtype, name = 'Transition rates', trainable = True)
-            self.transition_shapes = tf.Variable(self.transition_shapes, dtype = dtype, name = 'Transition shape', trainable = True, constraint=lambda w: tf.where(tf.greater_equal(w, 0), w, 0.0001))
-            
+        self.param_vars = tf.Variable(self.params,  dtype = dtype, name = 'recurrence_variables')
+        self.initial_param_vars = tf.Variable(self.initial_params,  dtype = dtype, name = 'initial_variables', trainable = True)
+        self.max_linking_distance_param = tf.Variable(self.max_linking_distance, dtype = dtype, name = 'max linking distance', trainable = False)
+        initial_fractions = self.initial_fractions
+        self.initial_fractions = tf.Variable(initial_fractions, dtype = dtype, name = 'Fractions', trainable = True)
+    
     def call(self, inputs):
         '''
         input dimensions: time point, gaussian, track, state, observed variable
@@ -1033,28 +861,16 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         dtype = self.dtype
         constraint_function = self.constraint_function
         
+        param_vars = self.param_vars
+        initial_param_vars = self.initial_param_vars
         nb_states = self.nb_states
-        max_linking_distance = self.max_linking_distance
+        max_linking_distance = self.max_linking_distance_param
         vary_params = self.vary_params
         vary_initial_params = self.vary_initial_params
+        initial_fractions = tf.math.softmax(self.initial_fractions)
         vary_initial_fractions = self.vary_initial_fractions
         
         nb_dims = inputs.shape[-1]
-        if self.Bayesian_inference:
-            mean_values = self.mean_values
-            cholsky_factor = self.cholsky_factor
-            model_types = self.model_types
-            param_vars, initial_param_vars, transition_rates, transition_shapes, initial_fractions = log_normal_parameter_sampling_function(nb_states, mean_values, cholsky_factor, model_types, dtype)
-            #self.param_vars = param_vars
-            #self.initial_param_vars = initial_param_vars
-            #self.initial_fractions = initial_fractions
-            initial_fractions = tf.math.softmax(initial_fractions)
-        else:
-            param_vars = self.param_vars
-            initial_param_vars = self.initial_param_vars
-            initial_fractions = tf.math.softmax(self.initial_fractions)
-            transition_rates = self.transition_rates
-            transition_shapes = self.transition_shapes
         
         param_vars = vary_params * param_vars + (1 - vary_params) * tf.stop_gradient(param_vars)
         initial_param_vars = vary_initial_params * initial_param_vars + (1 - vary_initial_params) * tf.stop_gradient(initial_param_vars)
@@ -1122,8 +938,6 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
                                                              nb_dims,
                                                              dtype = dtype)
         
-        current_hidden_var_coefs[:, 0]
-        
         transition_hidden_var_coefs = transition_hidden_var_coefs/transition_Gaussian_stds
         transition_biases = transition_biases/transition_Gaussian_stds[:,:,:]
         
@@ -1142,9 +956,9 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         
         Log_factors = nb_dims * Log_factors
         transition_Log_factors = nb_dims * transition_Log_factors
-        initial_states = [Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes]
+        initial_states = [Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases]
   
-        return initial_states, initial_fractions, param_vars
+        return inputs, initial_states
 
     def compute_scaling_factors(self, param_vars, initial_param_vars):
         '''
@@ -1225,7 +1039,6 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     transition_probas = transition_probas*transition_mask + non_transition_probas*(1-transition_mask)
     # Then, we update the log probability  
     all_LP = LP2 + tf.math.log(transition_probas) # + reshaped_transition_Log_factors
-    
     '''
     Once we performed transitions on the current states, we want to reshape transition_Prev_coefs,
     transition_Prev_biases and transition_LP to have a shape (nb_tracks, nb_states) instead of
@@ -1363,22 +1176,20 @@ sequence_phase_2 = recurrent_sequence_phase_2
 density = 0.001
 inputs = sliced_inputs
 mask = sliced_mask
-#Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes = initial_states
-Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes = initial_states
-
+Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
 nb_states = 2
 inputs[:,:,2]
 '''
 
 class Custom_RNN_layer(tf.keras.layers.Layer):
     
-    def __init__(self, nb_tracks, density, nb_states, sequence_phase_1, sequence_phase_2, transition_sequence, transition_param_function, sequence_length = 3, vary_transition_shapes = None, vary_transition_rates = None, **kwargs):
+    def __init__(self, nb_tracks, transition_shapes, transition_rates, density, nb_states, sequence_phase_1, sequence_phase_2, transition_sequence, transition_param_function, sequence_length = 3, vary_transition_shapes = None, vary_transition_rates = None, **kwargs):
         
         if type(vary_transition_rates) == type(None):
-            vary_transition_rates = tf.ones((nb_states, nb_states), dtype = dtype)
+            vary_transition_rates = tf.ones(transition_rates.shape, dtype = dtype)
         
         if type(vary_transition_shapes) == type(None):
-            vary_transition_shapes = tf.ones((nb_states, nb_states), dtype = dtype)
+            vary_transition_shapes = tf.ones(transition_shapes.shape, dtype = dtype)
         
         self.sequence_phase_1 = sequence_phase_1
         self.sequence_phase_2 = sequence_phase_2
@@ -1386,6 +1197,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         self.nb_states = nb_states + 1
         self.sequence_length = sequence_length
         self.nb_tracks = nb_tracks
+        self.initial_transition_params = [transition_shapes, transition_rates]
         self.transition_param_function = transition_param_function
         self.density = density
         self.vary_transition_shapes = vary_transition_shapes
@@ -1394,10 +1206,10 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
     
     def build(self, input_shape):
         nb_states = self.nb_states
-        #transition_shapes, transition_rates = self.initial_transition_params
+        transition_shapes, transition_rates = self.initial_transition_params
         sequence_length = self.sequence_length
-        #self.transition_rates = tf.Variable(transition_rates, dtype = dtype, name = 'Transition rates', trainable = True)
-        #self.transition_shapes = tf.Variable(transition_shapes, dtype = dtype, name = 'Transition shape', trainable = True, constraint=lambda w: tf.where(tf.greater_equal(w, 0), w, 0.0001))
+        self.transition_rates = tf.Variable(transition_rates, dtype = dtype, name = 'Transition rates', trainable = True)
+        self.transition_shapes = tf.Variable(transition_shapes, dtype = dtype, name = 'Transition shape', trainable = True, constraint=lambda w: tf.where(tf.greater_equal(w, 0), w, 0.0001))
         
         indices = tf.stack([tf.repeat(tf.constant(list(np.arange(nb_states))*sequence_length), nb_states), tf.concat([tf.range(nb_states)]*nb_states*sequence_length, 0)], axis = 1)
         transition_mask = tf.cast((indices[:,0] - indices[:,1])!=0, dtype = dtype)[None]
@@ -1407,12 +1219,14 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         self.built = True
     
     @tf.function(jit_compile=False)
-    def call(self, inputs, mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, Fractions, transition_rates, transition_shapes, anomalous_factors, isdir): # inputs = current positions, states = outputs of the previous layer, needs to be initialized correctly
+    def call(self, inputs, mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir): # inputs = current positions, states = outputs of the previous layer, needs to be initialized correctly
         
         nb_tracks = self.nb_tracks
         sequence_phase_1 = self.sequence_phase_1
         sequence_phase_2 = self.sequence_phase_2
         transition_sequence = self.transition_sequence
+        transition_rates = self.transition_rates
+        transition_shapes = self.transition_shapes
         transition_mask = self.transition_mask
         nb_states = self.nb_states
         indices = self.indices
@@ -1422,7 +1236,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         vary_transition_rates = self.vary_transition_rates
         
         ds = tf.math.exp(log_ds)
-        Fs = Fractions[0]
+        Fs = tf.math.softmax(softmax_inv_Fractions[0,:-1])
         effective_ds = ds + 2 * tf.math.exp(anomalous_factors) * isdir  # the coefficient 2 is rationalized by the fact that the directed motion is underestimated by a factor 2**0.5 and to which I add another factor 2**0.5 to account for the fact that directed motion is more exploratory than brownian motion
         
         transition_shapes = vary_transition_shapes * transition_shapes + (1 - vary_transition_shapes) * tf.stop_gradient(transition_shapes)
@@ -1443,7 +1257,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         transition_var = tf.repeat(transition_shapes/transition_rates**2, nb_tracks, axis=0)[:, :nb_states**2]
         gamma_dist_mean = tf.repeat(transition_shapes/transition_rates, nb_tracks, axis=0) # We initialize the transition 
         gamma_dist_var = tf.repeat((transition_shapes/transition_rates)**2, nb_tracks, axis=0)
-                
+        
         # state vector of dims : nb_tracks, nb_states (+1 for the transition state)*sequence length, sequence length, nb_states
         states = tf.range(0, nb_states*sequence_length, dtype = 'int32')%nb_states
         states = tf.repeat(states[:,None], sequence_length, axis = 1)
@@ -1532,9 +1346,6 @@ class Final_layer(tf.keras.layers.Layer):
         pred_states = tf.reduce_sum(weights[:,:,None, None]*last_states, 1)
         All_states = tf.concat((All_states, pred_states), axis = 1)
         output = LP
-        
-        #if tf.math.is_nan(tf.math.reduce_sum(output)):
-        #    raise ValueError('model stopped due to nan loss')
         
         return output, All_states
 
@@ -2088,8 +1899,8 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
     mislinking_dwell_time = tf.concat((mislinking_dwell_time, [0.1]), axis = 0)
         
     #mislinking_rates = tf.constant([0.078,0.146], dtype = dtype)[:, None] # density 1 -> rates 0.052 0.052 
-    mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None]-1e-10)# density 0.1 -> rates 0.052 0.052 
-    
+    mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None])# density 0.1 -> rates 0.052 0.052 
+
     new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 1)
     new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time[None]), axis = 0)
     
@@ -2097,107 +1908,18 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs, 
 
 def get_model_raw_params(model, return_dict = False):
     '''
-    Function to get the parameters from the model
+    Function to get the raw (log-space) parameters from the model
     '''
-    if model.Bayesian_inference:
-        init_layer = None
-        for layer in model.layers:
-            if isinstance(layer, Initial_layer_constraints):
-                init_layer = layer
-                break
-            
-        if init_layer is None:
-            print("Initial_layer_constraints not found")
-            return
-        model_types = init_layer.model_types
-        mean_values = init_layer.mean_values
-        cholsky_factor = init_layer.cholsky_factor
-        if return_dict:
-            model_parameters = {'Model types': model_types, 'Mean values': mean_values, 'cholsky factor': cholsky_factor}
-            return model_parameters
-        else:
-            return model_types, mean_values, cholsky_factor
-    
+    weights = model.weights
+    params = weights[0]
+    initial_params = weights[1]
+    initial_fractions = weights[2]
+    transition_shapes = weights[5]
+    transition_rates = weights[4]
+    if return_dict:
+        return {'params': params, 'initial_params':initial_params, 'initial_fractions': initial_fractions, 'transition_shapes':transition_shapes, 'transition_rates': transition_rates}
     else:
-        weights = model.weights
-        params = weights[0]
-        initial_params = weights[1]
-        initial_fractions = weights[2]
-        transition_shapes = weights[3]
-        transition_rates = weights[4]
-        if return_dict:
-            return {'params': params, 'initial_params':initial_params, 'initial_fractions': initial_fractions, 'transition_shapes':transition_shapes, 'transition_rates': transition_rates}
-        else:
-            return params, initial_params, initial_fractions, transition_shapes, transition_rates
-
-def get_model_params(model):
-    '''
-    Function to get the parameters from the model
-    '''
-    if model.Bayesian_inference:
-        init_layer = None
-        for layer in model.layers:
-            if isinstance(layer, Initial_layer_constraints):
-                init_layer = layer
-                break
-            
-        if init_layer is None:
-            print("Initial_layer_constraints not found")
-            return
-    
-        # Sample parameters multiple times
-        mean_values = init_layer.mean_values
-        cholsky_factor = init_layer.cholsky_factor
-        model_types = init_layer.model_types
-        nb_states = model_types.shape[0]
-        
-        sampled_params_list = []
-        sampled_fractions_list = []
-        sampled_rates_list = []
-        sampled_shapes_list = []
-        
-        for _ in range(10000):
-            param_vars, initial_param_vars, transition_rates, transition_shapes, initial_fractions = log_normal_parameter_sampling_function(
-                nb_states, mean_values, cholsky_factor, model_types, dtype)
-            sampled_params_list.append(param_vars.numpy())
-            sampled_fractions_list.append(tf.math.softmax(initial_fractions).numpy())
-            sampled_rates_list.append(tf.math.softmax(transition_rates, axis=1).numpy())
-            sampled_shapes_list.append(tf.math.exp(transition_shapes).numpy())
-        
-        # Calculate statistics
-        sampled_params = np.array(sampled_params_list)
-        sampled_fractions = np.array(sampled_fractions_list)
-        sampled_rates = np.array(sampled_rates_list)
-        sampled_shapes = np.array(sampled_shapes_list)
-        
-        anomalous_factors = tf.sigmoid(sampled_params[:, :, 2])*(1-sampled_params[:, :, 4]) + np.exp(sampled_params[:, :, 2])*sampled_params[:, :, 4]
-        # Extract mean and std for each parameter type
-        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-
-        model_parameters = {'Model types': model_types_str,
-            'anomalous factors (mean)': np.mean(anomalous_factors, axis=0),
-            'anomalous factors (std)': np.std(anomalous_factors, axis=0),
-            'Localization errors (mean)': np.mean(np.exp(sampled_params[:, :, 0]), axis=0),
-            'Localization errors (std)': np.std(np.exp(sampled_params[:, :, 0]), axis=0),
-            'd (mean)': np.mean(np.exp(sampled_params[:, :, 1]), axis=0),
-            'd (std)': np.std(np.exp(sampled_params[:, :, 1]), axis=0),
-            'transition rates (mean)': np.mean(sampled_rates, axis=0),
-            'transition rates (std)': np.std(sampled_rates, axis=0),
-            'transition shapes (mean)': np.mean(sampled_shapes, axis=0),
-            'transition shapes (std)': np.std(sampled_shapes, axis=0),
-            'Fractions (mean)': np.mean(sampled_fractions, axis=0)[0],
-            'Fractions (std)': np.std(sampled_fractions, axis=0)[0]}
-        
-    else:
-        weights = model.weights
-        nb_states = weights[-1].shape[0]
-        transition_shapes = tf.math.exp(weights[4])
-        transition_rates = tf.math.softmax(weights[3], axis = 1)*transition_shapes
-        model_types = weights[0][:, -1].numpy().astype(int)
-        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-        model_parameters = {'Model type': model_types_str,'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
-
-    return model_parameters
+        return params, initial_params, initial_fractions, transition_shapes, transition_rates
 
 def build_model(track_len, # maximum number of time points in the input tracks 
                 nb_states, # Number of states of their model
@@ -2216,8 +1938,7 @@ def build_model(track_len, # maximum number of time points in the input tracks
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
                 vary_transition_rates = None,
-                Bayesian_inference = False,
-                ):
+                bayesian_inference = True):
     
     # Defining the hyperparameters of the model
     dtype = 'float64'
@@ -2230,8 +1951,8 @@ def build_model(track_len, # maximum number of time points in the input tracks
     inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
     input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), dtype = dtype)
     
-    #inputs = tracks[:100]
-    #input_mask = all_masks[:100]
+    #inputs = tracks
+    #input_mask = all_masks
     
     transposed_inputs = transpose_layer(dtype = dtype)(inputs, perm = [2, 1, 0, 3, 4, 5])
     
@@ -2242,33 +1963,28 @@ def build_model(track_len, # maximum number of time points in the input tracks
                                            params,
                                            initial_params,
                                            initial_fractions,
-                                           transition_rates,
-                                           transition_shapes,
                                            max_linking_distance,
                                            constraint_function,
                                            vary_params = vary_params,
                                            vary_initial_params = vary_initial_params,
                                            vary_initial_fractions = vary_initial_fractions,
                                            sequence_length = sequence_length,
-                                           Bayesian_inference = Bayesian_inference,
                                            dtype = dtype)
-    #self = Init_layer
+    self = Init_layer
+    tensor1, initial_states = Init_layer(transposed_inputs)
     
-    initial_states, initial_fractions, param_vars = Init_layer(transposed_inputs)
+    softmax_inv_Fractions = Init_layer.initial_fractions
+    log_ds = Init_layer.param_vars[:, 1]
+    anomalous_factors = Init_layer.param_vars[:, 2]
+    isdir = Init_layer.param_vars[:, 4]
     
-    Fractions = initial_fractions[:, :-1]
-    log_ds = param_vars[:-1, 1]
-    anomalous_factors = param_vars[:-1, 2]
-    isdir = param_vars[:-1, 4]
-    
-    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, transition_rates, transition_shapes = initial_states
+    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
     
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
-    layer = Custom_RNN_layer(batch_size, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
-    #self = layer
-    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, Fractions, transition_rates, transition_shapes, anomalous_factors, isdir)
+    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
+    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir)
     
     F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer(states)
@@ -2276,99 +1992,47 @@ def build_model(track_len, # maximum number of time points in the input tracks
     model = tf.keras.Model(inputs=(inputs, input_mask), outputs=outputs, name="Diffusion_model")
     pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
     
-    if Bayesian_inference:
-        model.Bayesian_inference = True
-        pred_model.Bayesian_inference = True
-
     return model, pred_model
 
 def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (None, 1)
     #print(y_pred)
+    
     max_LP = tf.math.reduce_max(y_pred, 1, keepdims = True)
     reduced_LP = y_pred - max_LP
-    pred = tf.math.log(tf.math.reduce_sum(tf.math.exp(reduced_LP), 1, keepdims = True)+1e-20) + max_LP
-    loss = - tf.math.reduce_mean(pred)
-    #if tf.math.is_nan(loss):
-    #    raise ValueError('model stopped due to nan loss')
-        
-    return loss # sum over the spatial dimensions axis
+    pred = tf.math.log(tf.math.reduce_sum(tf.math.exp(reduced_LP), 1, keepdims = True)) + max_LP
+    
+    return - tf.math.reduce_mean(pred) # sum over the spatial dimensions axis
 
 class get_parameters(tf.keras.callbacks.Callback):
     def __init__(self, layer_name='params'):
         super(get_parameters, self).__init__()
         self.layer_name = layer_name
-        self.step = 0
     
     def on_epoch_end(self, epoch, logs=None):
         # Retrieve the weights of the model
-        if self.step % 10 ==0:
-            init_layer = None
-            for layer in self.model.layers:
-                if isinstance(layer, Initial_layer_constraints):
-                    init_layer = layer
-                    break
-                
-            if init_layer is None:
-                print("Initial_layer_constraints not found")
-                return
-            
-            if init_layer.Bayesian_inference:
-                
-                # Sample parameters multiple times
-                mean_values = init_layer.mean_values
-                cholsky_factor = init_layer.cholsky_factor
-                model_types = init_layer.model_types
-                nb_states = model_types.shape[0]
-                
-                sampled_params_list = []
-                sampled_fractions_list = []
-                sampled_rates_list = []
-                sampled_shapes_list = []
-                
-                for _ in range(10000):
-                    param_vars, initial_param_vars, transition_rates, transition_shapes, initial_fractions = log_normal_parameter_sampling_function(
-                        nb_states, mean_values, cholsky_factor, model_types, dtype)
-                    sampled_params_list.append(param_vars.numpy())
-                    sampled_fractions_list.append(tf.math.softmax(initial_fractions).numpy())
-                    sampled_rates_list.append(tf.math.softmax(transition_rates, axis=1).numpy())
-                    sampled_shapes_list.append(tf.math.exp(transition_shapes).numpy())
-                
-                # Calculate statistics
-                sampled_params = np.array(sampled_params_list)
-                sampled_fractions = np.array(sampled_fractions_list)
-                sampled_rates = np.array(sampled_rates_list)
-                sampled_shapes = np.array(sampled_shapes_list)
-                
-                # Extract mean and std for each parameter type
-                params = {'anomalous factors (mean)': list(np.round(
-                        np.mean(tf.sigmoid(sampled_params[:, :, 2])*(1-sampled_params[:, :, 4]) + 
-                                np.exp(sampled_params[:, :, 2])*sampled_params[:, :, 4], axis=0), 4)),
-                    'anomalous factors (std)': list(np.round(
-                        np.std(tf.sigmoid(sampled_params[:, :, 2])*(1-sampled_params[:, :, 4]) + 
-                               np.exp(sampled_params[:, :, 2])*sampled_params[:, :, 4], axis=0), 4)),
-                    'Localization errors (mean)': list(np.round(np.mean(np.exp(sampled_params[:, :, 0]), axis=0), 4)),
-                    'Localization errors (std)': list(np.round(np.std(np.exp(sampled_params[:, :, 0]), axis=0), 4)),
-                    'd (mean)': list(np.round(np.mean(np.exp(sampled_params[:, :, 1]), axis=0), 4)),
-                    'd (std)': list(np.round(np.std(np.exp(sampled_params[:, :, 1]), axis=0), 4)),
-                    'transition rates (mean)': list(np.round(np.mean(sampled_rates, axis=0).reshape(nb_states**2), 3)),
-                    'transition rates (std)': list(np.round(np.std(sampled_rates, axis=0).reshape(nb_states**2), 3)),
-                    'transition shapes (mean)': list(np.round(np.mean(sampled_shapes, axis=0).reshape(nb_states**2), 2)),
-                    'transition shapes (std)': list(np.round(np.std(sampled_shapes, axis=0).reshape(nb_states**2), 2)),
-                    'Fractions (mean)': list(np.round(np.mean(sampled_fractions, axis=0)[0], 3)),
-                    'Fractions (std)': list(np.round(np.std(sampled_fractions, axis=0)[0], 3))}
-            else:
-                weights = self.model.weights
-                nb_states = weights[-2].shape[0]
-                transition_shapes = tf.math.exp(weights[4])
-                transition_rates = tf.math.softmax(weights[3], axis = 1)*transition_shapes
-                params = {'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
-            print(params)
-        self.step += 1
+        weights = self.model.weights
+        nb_states = weights[-1].shape[0]
+        transition_shapes = tf.math.exp(weights[5])
+        transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
+        model_types = weights[0][:, -1].numpy().astype(int)
+        model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
+        params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4],3)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'transition rates': list(np.round(transition_rates, 3).reshape(nb_states**2)), 'transition shapes': list(np.round(transition_shapes, 2).reshape(nb_states**2)), 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
+        print(params)
+
+def get_model_params(model):
+    weights = model.weights
+    nb_states = weights[-1].shape[0]
+    transition_shapes = tf.math.exp(weights[5])
+    transition_rates = tf.math.softmax(weights[4], axis = 1)*transition_shapes
+    model_types = weights[0][:, -1].numpy().astype(int)
+    #model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
+    param_dict = {'Model types': model_types, 'anomalous factors': tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4], 'Localization errors': np.exp(weights[0][:, 0]), 'd': np.exp(weights[0][:, 1]), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': tf.math.softmax(weights[2][0])}
+    return param_dict
 
 def model_to_DataFrame(model, dt):
     weights = model.weights
     nb_states = weights[0].shape[0]
-    params = {'anomalous factors': (tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + tf.exp(weights[0][:, 2])*weights[0][:, 4]).numpy(), 'Localization errors': np.exp(weights[0][:, 0]), 'd':np.exp(weights[0][:, 1]), 'transition rates': tf.math.softmax(weights[3], axis = 1).numpy(), 'transition shapes': tf.math.exp(weights[4]).numpy(), 'Fractions': (tf.math.softmax(weights[2][0])).numpy()}
+    params = {'anomalous factors': (tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + tf.exp(weights[0][:, 2])*weights[0][:, 4]).numpy(), 'Localization errors': np.exp(weights[0][:, 0]), 'd':np.exp(weights[0][:, 1]), 'transition rates': tf.math.softmax(weights[4], axis = 1).numpy(), 'transition shapes': tf.math.exp(weights[5]).numpy(), 'Fractions': (tf.math.softmax(weights[2][0])).numpy()}
     colnames = []
     data = []
     for state in range(nb_states):
@@ -2439,12 +2103,7 @@ def Model_finder(tracks,
                  vary_transition_shapes = None,
                  vary_transition_rates = None):
     '''
-    Our model does not automatically changes the types of motion as we found this 
-    inefficient due to local maxima around null velocities or confinement factors.
-    In this algorithm, we try different combinations of types of motion to find the
-    best model by moximizing the likelihood. In order to limit the computation time, 
-    this algorithm assumes that the likelihood as a function of the type of motion 
-    for state i is independent of the types of motion assumed for the other states. 
+    If a state is not found immobile, we test the alternative state hypothesis
     '''
     nb_states = params.shape[0]
     track_len = masks.shape[1]
@@ -2489,8 +2148,8 @@ def Model_finder(tracks,
         model.weights[0].assign(params)
         model.weights[1].assign(initial_params)
         model.weights[2].assign(initial_fractions)
-        model.weights[3].assign(transition_rates)
-        model.weights[4].assign(transition_shapes)
+        model.weights[4].assign(transition_rates)
+        model.weights[5].assign(transition_shapes)
         
         model.weights[0][i, 4].assign(1 - model.weights[0][i, 4])
         model.weights[0][i, 2].assign(initial_anomalous_factors[i])
@@ -2504,7 +2163,7 @@ def Model_finder(tracks,
         
         list(np.round(tf.math.softmax(model.weights[2][0]), 3))
         
-        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_params(model)
+        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_raw_params(model)
         LogLikelihood = - history.history['loss'][-1]
         loss_history = history.history['loss']
         model_ID = len(All_models)
@@ -2520,8 +2179,8 @@ def Model_finder(tracks,
     model.weights[0].assign(params)
     model.weights[1].assign(initial_params)
     model.weights[2].assign(initial_fractions)
-    model.weights[3].assign(transition_rates)
-    model.weights[4].assign(transition_shapes)
+    model.weights[4].assign(transition_rates)
+    model.weights[5].assign(transition_shapes)
     return model, pred_model
 
 def build_abrupt_directed_motion_changes_model(track_len, # maximum number of time points in the input tracks 
@@ -2582,7 +2241,7 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
         mislinking_dwell_time = tf.concat((mislinking_dwell_time, [0.1]), axis = 0)
         
         #mislinking_rates = tf.constant([0.078,0.146], dtype = dtype)[:, None] # density 1 -> rates 0.052 0.052 
-        mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None]-1e-10)# density 0.1 -> rates 0.052 0.052 
+        mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None])# density 0.1 -> rates 0.052 0.052 
     
         new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 1)
         new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time[None]), axis = 0)
@@ -2654,11 +2313,12 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
-    layer = Custom_RNN_layer(batch_size, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
+    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
+    
     #self = layer
     # inputs = sliced_inputs
     # mask = sliced_mask#
-    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, transition_rates, transition_shapes, anomalous_factors, isdir)
+    states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir)
     
     F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer(states)
@@ -2667,7 +2327,6 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
     
     return model, pred_model
-
 
 def get_number_of_states(tracks,
                          params,
@@ -2678,20 +2337,20 @@ def get_number_of_states(tracks,
                          nb_dims,
                          sequence_length,
                          max_linking_distance,
-                         estimated_density=1e-8,
+                         estimated_density,
                          epochs = 100,
                          epoch_decay = 70,
                          learning_rate = 0.02,
                          decay_rate = 0.005,
                          batch_size = 100,
                          track_masks = None,
-                         vary_params = True,
-                         vary_initial_params = True,
-                         vary_initial_fractions = True,
+                         vary_params = None,
+                         vary_initial_params = None,
+                         vary_initial_fractions = None,
                          vary_transition_shapes = False,
-                         vary_transition_rates = True,
-                         device = '/CPU:0',
-                         verbose = 1):
+                         vary_transition_rates = None,
+                         device = '/GPU:0'):
+    
     if type(tracks)==list:
         tracks, _, track_masks = padding(tracks)
     else:
@@ -2739,12 +2398,10 @@ def get_number_of_states(tracks,
             vary_initial_fractions=vary_initial_fractions,
             vary_transition_shapes=vary_transition_shapes,
             vary_transition_rates=vary_transition_rates)
-        
-        # Initial loss
-        if verbose:
-            preds = model.predict((tracks, track_masks), batch_size=batch_size)
-            print('initial preditions:', MLE_loss(preds, preds))
-        
+        tracks.shape
+        preds = model.predict((tracks, track_masks), batch_size=batch_size)
+        print('initial preditions:', MLE_loss(preds, preds))
+                
         # Compile and train
         decay_step = epoch_decay * track_masks.shape[0] // batch_size
         lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_step)
@@ -2754,12 +2411,12 @@ def get_number_of_states(tracks,
         with tf.device(device):
             history = model.fit(
                 (tracks, track_masks), 
-                tracks, 
-                epochs=epochs, 
-                batch_size=batch_size, 
+                tracks,
+                epochs=epochs,
+                batch_size=batch_size,
                 callbacks=[get_parameters()], 
                 shuffle=True, 
-                verbose=verbose)
+                verbose=1)
         
         # Calculate metrics for model selection
         with tf.device(device):
@@ -2768,33 +2425,34 @@ def get_number_of_states(tracks,
         
         # Count parameters (excluding the mislinking state)
         num_params = (current_nb_states * 5 +  # params: LocErr, D, anomalous, q, model_type
-            current_nb_states * 1 +  # initial_params
-            current_nb_states +      # initial_fractions
-            current_nb_states ** 2 * 2)  # transition rates and shapes
+                      current_nb_states * 1 +  # initial_params
+                      current_nb_states +      # initial_fractions
+                      current_nb_states ** 2 * 2 ) # transition rates and shapes
         
         # Calculate information criteria
         aic = 2 * num_params - 2 * log_likelihood
         bic = np.log(track_masks.shape[0]) * num_params - 2 * log_likelihood
         
         # Get fitted parameters
+        # Get fitted parameters
         fitted_weights = model.get_weights()
         fitted_params = fitted_weights[0].copy()
         fitted_initial_params = fitted_weights[1].copy()
         fitted_initial_fractions = fitted_weights[2].copy()
-        fitted_transition_rates = fitted_weights[3].copy()
-        fitted_transition_shapes = fitted_weights[4].copy()
-        model_results[6]['model'].summary()
+        fitted_transition_rates = fitted_weights[4].copy()
+        fitted_transition_shapes = fitted_weights[5].copy()
+        parameters = get_model_params(model)
+        raw_parameters = get_model_raw_params(model, return_dict = True)
+        
         # Store results
-        model_results[current_nb_states] = {'log_likelihood': log_likelihood,
+        model_results[current_nb_states] = {
+            'log_likelihood': log_likelihood,
             'aic': aic,
             'bic': bic,
             'num_params': num_params,
             'loss_history': history.history['loss'],
-            'params': fitted_params,
-            'initial_params': fitted_initial_params,
-            'initial_fractions': fitted_initial_fractions,
-            'transition_rates': fitted_transition_rates,
-            'transition_shapes': fitted_transition_shapes,
+            'parameters': parameters,
+            'raw_parameters': raw_parameters,
             'model': model,
             'pred_model': pred_model}
         
@@ -2869,12 +2527,6 @@ def get_number_of_states(tracks,
         else:
             break
     
-    # Select best model based on BIC (or AIC)
-    best_nb_states = min(model_results.keys(), key=lambda k: model_results[k]['bic'])
-    
-    log_likelihoods = np.array([model_results[k]['log_likelihood'] for k in np.sort(list(model_results.keys()))])
-    nb_params = np.array([model_results[k]['num_params'] for k in np.sort(list(model_results.keys()))])
-    
     print(f"\n{'='*60}")
     print(f"Model Selection Results:")
     print(f"{'='*60}")
@@ -2883,20 +2535,707 @@ def get_number_of_states(tracks,
         print(f"{n_states} states: LL={result['log_likelihood']:.1f}, "
               f"AIC={result['aic']:.1f}, BIC={result['bic']:.1f}")
     
-    print(f"\n★ Best model: {best_nb_states} states (lowest BIC)")
+    return model_results
+
+
+'''
+HMC sampler for Bayesian inference
+'''
+from copy import deepcopy
+dtype = 'float64'
+
+
+# ---------------------------------------------------------------------------
+# Utility: flatten / unflatten model parameters
+# ---------------------------------------------------------------------------
+
+def get_trainable_param_indices(model):
+    """
+    Identify which model weights are trainable and return their indices.
+    In the ExaTrack model the weight order is typically:
+        0 – params  (recurrence variables)
+        1 – initial_params (initial variables)
+        2 – initial_fractions (Fractions)
+        3 – max_linking_distance  (not trainable)
+        4 – transition_rates
+        5 – transition_shapes
+    """
+    indices = []
+    for i, w in enumerate(model.weights):
+        if w.trainable:
+            indices.append(i)
+    return indices
+
+
+def flatten_params(model, indices):
+    """Flatten selected model weights into a single 1-D tensor."""
+    parts = []
+    for i in indices:
+        parts.append(tf.reshape(tf.cast(model.weights[i], dtype), [-1]))
+    return tf.concat(parts, axis=0)
+
+
+def unflatten_params(flat, model, indices):
+    """Write a flat parameter vector back into the model weights."""
+    offset = 0
+    for i in indices:
+        w = model.weights[i]
+        size = tf.reduce_prod(w.shape)
+        chunk = tf.reshape(flat[offset:offset + size], w.shape)
+        w.assign(tf.cast(chunk, w.dtype))
+        offset += size
+
+
+def shapes_and_sizes(model, indices):
+    """Return the shapes and sizes of selected model weights."""
+    shapes, sizes = [], []
+    for i in indices:
+        shapes.append(model.weights[i].shape)
+        sizes.append(int(tf.reduce_prod(model.weights[i].shape)))
+    return shapes, sizes
+
+
+# ---------------------------------------------------------------------------
+# Log-likelihood wrapper
+# ---------------------------------------------------------------------------
+
+def compute_log_likelihood(model, tracks, masks, batch_size):
+    """
+    Compute the *total* log-likelihood of the data under the current model
+    parameters.  This mirrors ``MLE_loss`` but returns a positive scalar
+    (the total LL rather than the negative mean).
+
+    Parameters
+    ----------
+    model : tf.keras.Model
+        The compiled ExaTrack likelihood model (not the pred_model).
+    tracks : ndarray, shape (N, 1, T, 1, 1, D)
+        Padded track tensor.
+    masks : ndarray, shape (N, T)
+        Padding masks.
+    batch_size : int
+        Batch size used for prediction.
+
+    Returns
+    -------
+    log_lik : tf.Tensor, scalar float64
+        Total log-likelihood summed over all tracks.
+    """
+    nb_tracks = masks.shape[0]
+    y_pred = model.predict((tracks, masks), batch_size=batch_size, verbose=0)
+    y_pred = tf.cast(y_pred, dtype)
+    # log-sum-exp over the state/sequence dimension (axis 1) per track
+    max_lp = tf.reduce_max(y_pred, axis=1, keepdims=True)
+    per_track_ll = tf.math.log(
+        tf.reduce_sum(tf.exp(y_pred - max_lp), axis=1, keepdims=True)
+    ) + max_lp
+    return tf.reduce_sum(per_track_ll)
+
+
+@tf.function
+def _log_likelihood_from_flat(flat_params, model_weights_trainable,
+                              shapes, sizes, model_fn,
+                              tracks_tensor, masks_tensor):
+    """
+    Pure-TF computation of log-likelihood given a flat parameter vector.
+    ``model_fn`` is a callable that runs the forward pass and returns the
+    raw log-probability tensor (shape [N, S]).
+
+    This variant is used inside the gradient tape so that TF can
+    differentiate through it.
+    """
+    # Assign flat params into weight variables
+    offset = 0
+    for w, sh, sz in zip(model_weights_trainable, shapes, sizes):
+        w.assign(tf.reshape(flat_params[offset:offset + sz], sh))
+        offset += sz
+
+    y_pred = model_fn(tracks_tensor, masks_tensor)
+    y_pred = tf.cast(y_pred, dtype)
+    max_lp = tf.reduce_max(y_pred, axis=1, keepdims=True)
+    per_track_ll = tf.math.log(
+        tf.reduce_sum(tf.exp(y_pred - max_lp), axis=1, keepdims=True)
+    ) + max_lp
+    return tf.reduce_sum(per_track_ll)
+
+
+# ---------------------------------------------------------------------------
+# Log-prior (weakly informative defaults – customise as needed)
+# ---------------------------------------------------------------------------
+
+def default_log_prior(flat_params):
+    """
+    Weakly informative Gaussian prior centred at 0 with std = 10 for every
+    parameter.  Replace or extend this with domain-specific priors.
+    """
+    return -0.5 * tf.reduce_sum(flat_params ** 2) / (10.0 ** 2)
+
+
+# ---------------------------------------------------------------------------
+# Leapfrog integrator
+# ---------------------------------------------------------------------------
+
+def leapfrog(q, p, grad_log_prob_fn, step_size, num_leapfrog_steps,
+             mass_inv=None):
+    """
+    Leapfrog (Störmer-Verlet) integrator for Hamiltonian dynamics.
+
+    Parameters
+    ----------
+    q : tf.Tensor  – position (parameters), shape [D]
+    p : tf.Tensor  – momentum, shape [D]
+    grad_log_prob_fn : callable(q) -> (log_prob, grad)
+        Returns log-probability and its gradient w.r.t. q.
+    step_size : float or tf.Tensor
+        Integration step size (epsilon).
+    num_leapfrog_steps : int
+        Number of leapfrog steps (L).
+    mass_inv : tf.Tensor or None
+        Inverse mass (diagonal).  If None, identity is used.
+
+    Returns
+    -------
+    q_new, p_new, log_prob_new : updated position, momentum, and log-prob.
+    """
+    if mass_inv is None:
+        mass_inv = tf.ones_like(q)
+
+    q = tf.identity(q)
+    p = tf.identity(p)
+
+    # Half-step for momentum
+    log_prob, grad = grad_log_prob_fn(q)
+    p = p + 0.5 * step_size * grad
     
-    # Return best model and all results
-    best_model_info = model_results[best_nb_states]
+    for i in range(num_leapfrog_steps - 1):
+        # Full step for position
+        q = q + step_size * mass_inv * p
+        # Full step for momentum
+        log_prob, grad = grad_log_prob_fn(q)
+        p = p + step_size * grad
+
+    # Final full step for position
+    q = q + step_size * mass_inv * p
+    # Final half-step for momentum
+    log_prob, grad = grad_log_prob_fn(q)
+    p = p + 0.5 * step_size * grad
+
+    # Negate momentum for reversibility (not strictly necessary for MH)
+    p = -p
     
-    return {'best_nb_states': best_nb_states,
-            'best_model': best_model_info['model'],
-            'best_pred_model': best_model_info['pred_model'],
-            'best_params': best_model_info['params'],
-            'best_initial_params': best_model_info['initial_params'],
-            'best_initial_fractions': best_model_info['initial_fractions'],
-            'best_transition_rates': best_model_info['transition_rates'],
-            'best_transition_shapes': best_model_info['transition_shapes'],
-            'all_results': model_results}
+    return q, p, log_prob
+
+
+# ---------------------------------------------------------------------------
+# Hamiltonian Monte Carlo sampler
+# ---------------------------------------------------------------------------
+
+class HMCSampler:
+    """
+    Hamiltonian Monte Carlo sampler for ExaTrack model parameters.
+
+    Parameters
+    ----------
+    model : tf.keras.Model
+        The ExaTrack *likelihood* model (the one whose output is the
+        log-probability tensor of shape [N, S]).
+    tracks : ndarray
+        Track data, shape (N, 1, T, 1, 1, D).
+    masks : ndarray
+        Padding masks, shape (N, T).
+    batch_size : int
+        Batch size for likelihood evaluation.
+    step_size : float
+        Initial leapfrog step size (epsilon).
+    num_leapfrog_steps : int
+        Number of leapfrog steps per HMC iteration.
+    log_prior_fn : callable or None
+        Function  flat_params -> scalar log-prior.
+        Defaults to a weak Gaussian prior.
+    param_indices : list[int] or None
+        Indices of model.weights to sample.  If None, all trainable
+        weights are sampled.
+    mass_diag : ndarray or None
+        Diagonal of the mass matrix.  If None, identity is used.
+        A good heuristic is to set this to the inverse variance of each
+        parameter estimated from a short optimisation run.
+    target_accept_rate : float
+        Target Metropolis acceptance rate for dual-averaging step-size
+        adaptation (used during warmup).
+    """
+
+    def __init__(self,
+                 model,
+                 tracks,
+                 masks,
+                 batch_size,
+                 step_size=1e-3,
+                 num_leapfrog_steps=10,
+                 log_prior_fn=None,
+                 param_indices=None,
+                 mass_diag=None,
+                 target_accept_rate=0.65):
+        
+        self.model = model
+        self.tracks = tf.constant(tracks, dtype=dtype)
+        self.masks = tf.constant(masks, dtype=dtype)
+        self.batch_size = batch_size
+
+        # Determine which weights to sample
+        if param_indices is None:
+            param_indices = get_trainable_param_indices(model)
+        self.param_indices = param_indices
+        self._shapes, self._sizes = shapes_and_sizes(model, param_indices)
+        self._trainable_weights = [model.weights[i] for i in param_indices]
+        self._ndim = sum(self._sizes)
+
+        # HMC tuning knobs
+        self.step_size = tf.Variable(step_size, dtype=dtype)
+        self.num_leapfrog_steps = num_leapfrog_steps
+        self.log_prior_fn = log_prior_fn or default_log_prior
+
+        # Mass matrix (diagonal)
+        if mass_diag is not None:
+            self.mass_inv = tf.constant(1.0 / mass_diag, dtype=dtype)
+        else:
+            self.mass_inv = tf.ones(self._ndim, dtype=dtype)
+        
+        # Dual averaging for step-size adaptation
+        self.target_accept_rate = target_accept_rate
+        self._mu = tf.cast(tf.math.log(10.0 * step_size), dtype=dtype)
+        self._log_step_size_bar = tf.Variable(0.0, dtype=dtype)
+        self._h_bar = tf.Variable(0.0, dtype=dtype)
+        self._gamma = 0.05
+        self._t0 = 10.0
+        self._kappa = 0.75
+        
+        # Book-keeping
+        self.samples = []
+        self.log_probs = []
+        self.accept_count = 0
+        self.total_count = 0
+
+    # ------------------------------------------------------------------
+    # gradient of log posterior
+    # ------------------------------------------------------------------
+    def _grad_log_posterior(self, q):
+        """
+        Returns (log_posterior, gradient) evaluated at parameter vector q.
+        """
+        q = tf.cast(q, dtype)
+        with tf.GradientTape() as tape:
+            tape.watch(q)
+            # Write q into model weights
+            offset = 0
+            for w, sh, sz in zip(self._trainable_weights,
+                                  self._shapes, self._sizes):
+                w.assign(tf.reshape(q[offset:offset + sz], sh))
+                offset += sz
+
+            # Forward pass  ── uses model.__call__ so TF traces the graph
+            y_pred = self.model((self.tracks, self.masks), training=False)
+            y_pred = tf.cast(y_pred, dtype)
+
+            max_lp = tf.reduce_max(y_pred, axis=1, keepdims=True)
+            per_track_ll = (
+                tf.math.log(
+                    tf.reduce_sum(tf.exp(y_pred - max_lp), axis=1,
+                                  keepdims=True)
+                ) + max_lp
+            )
+            log_lik = tf.reduce_sum(per_track_ll)
+            log_prior = self.log_prior_fn(q)
+            log_post = log_lik + log_prior
+
+        grad = tape.gradient(log_post, q)
+        # Replace NaN / Inf gradients with 0 (numerical safety net)
+        grad = tf.where(tf.math.is_finite(grad), grad,
+                        tf.zeros_like(grad))
+        return log_post, grad
+
+    # ------------------------------------------------------------------
+    # single HMC step
+    # ------------------------------------------------------------------
+    def _hmc_step(self, q_current, log_prob_current):
+        """
+        One iteration of HMC: sample momentum, leapfrog, MH accept/reject.
+        """
+        # Sample momentum from N(0, M)
+        p_current = tf.random.normal([self._ndim], dtype=dtype
+                                     ) / tf.sqrt(self.mass_inv)
+        
+        # Current Hamiltonian
+        kinetic_current = 0.5 * tf.reduce_sum(self.mass_inv * p_current ** 2)
+        H_current = -log_prob_current + kinetic_current
+        
+        # Leapfrog integration
+        q_proposed, p_proposed, log_prob_proposed = leapfrog(
+            q_current, p_current,
+            self._grad_log_posterior,
+            self.step_size,
+            self.num_leapfrog_steps,
+            self.mass_inv)
+        
+        # Proposed Hamiltonian
+        kinetic_proposed = 0.5 * tf.reduce_sum(
+            self.mass_inv * p_proposed ** 2)
+        H_proposed = -log_prob_proposed + kinetic_proposed
+        
+        # Metropolis-Hastings acceptance
+        log_accept_ratio = H_current - H_proposed  # = log(p_proposed/p_current)
+        accept_prob = tf.minimum(1.0, tf.exp(
+            tf.minimum(log_accept_ratio, tf.constant(20.0, dtype=dtype))
+        ))
+
+        u = tf.random.uniform([], dtype=dtype)
+        accepted = u < accept_prob
+
+        if accepted:
+            return q_proposed, log_prob_proposed, accept_prob, True
+        else:
+            # Restore current params into model
+            offset = 0
+            for w, sh, sz in zip(self._trainable_weights,
+                                  self._shapes, self._sizes):
+                w.assign(tf.reshape(q_current[offset:offset + sz], sh))
+                offset += sz
+            return q_current, log_prob_current, accept_prob, False
+    
+    # ------------------------------------------------------------------
+    # Dual-averaging step-size adaptation (Hoffman & Gelman, 2014)
+    # ------------------------------------------------------------------
+    def _adapt_step_size(self, iteration, accept_prob):
+        """Dual averaging to tune epsilon during warmup."""
+        m = iteration + 1.0
+        w = 1.0 / (m + self._t0)
+        self._h_bar.assign((1.0 - w) * self._h_bar +
+            w * (self.target_accept_rate - accept_prob))
+        log_eps = (self._mu -
+                   tf.sqrt(m) / self._gamma * self._h_bar)
+        self.step_size.assign(tf.exp(log_eps))
+        m_kappa = m ** (-self._kappa)
+        self._log_step_size_bar.assign(m_kappa * log_eps +
+            (1.0 - m_kappa) * self._log_step_size_bar)
+    
+    # ------------------------------------------------------------------
+    # Mass matrix adaptation from warmup samples
+    # ------------------------------------------------------------------
+    def _adapt_mass_matrix(self, warmup_samples):
+        """
+        Set the diagonal mass matrix to the empirical variance of the
+        warmup samples (Welford online algorithm could be used for very
+        long warmups).
+        """
+        if len(warmup_samples) < 20:
+            return
+        stacked = tf.stack(warmup_samples)
+        var = tf.math.reduce_variance(stacked[::-1][:100], axis=0)
+        # Regularise: don't let any variance be too small
+        var = tf.maximum(var, tf.constant(1e-8, dtype=dtype))
+        self.mass_inv = 1.0 / var
+    
+    # ------------------------------------------------------------------
+    # Main sampling loop
+    # ------------------------------------------------------------------
+    # self = sampler
+    def sample(self,
+               num_samples=500,
+               num_warmup=200,
+               thin=1,
+               adapt_step_size=True,
+               adapt_mass_matrix=True,
+               verbose=True):
+        """
+        Run the HMC sampler.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of post-warmup samples to collect.
+        num_warmup : int
+            Number of warmup (burn-in) iterations with adaptation.
+        thin : int
+            Keep every ``thin``-th sample.
+        adapt_step_size : bool
+            Whether to adapt the step size during warmup via dual averaging.
+        adapt_mass_matrix : bool
+            Whether to adapt the diagonal mass matrix from warmup samples.
+        verbose : bool
+            Print progress information.
+
+        Returns
+        -------
+        samples : np.ndarray, shape (num_samples // thin, D)
+            Posterior samples (flat parameter vectors).
+        log_probs : np.ndarray, shape (num_samples // thin,)
+            Log-posterior at each kept sample.
+        accept_rate : float
+            Overall Metropolis acceptance rate.
+        """
+        # Initialise from current model weights
+        q = flatten_params(self.model, self.param_indices)
+        log_prob, _ = self._grad_log_posterior(q)
+        
+        warmup_samples = []
+        
+        total_iterations = num_warmup + num_samples
+        self.samples = []
+        self.log_probs = []
+        self.accept_count = 0
+        self.total_count = 0
+        
+        for i in range(total_iterations):
+            print(i)
+            is_warmup = i < num_warmup
+            
+            q, log_prob, accept_prob, accepted = self._hmc_step(q, log_prob)
+            
+            self.total_count += 1
+            if accepted:
+                self.accept_count += 1
+            
+            # ---- Adaptation during warmup ----
+            if is_warmup:
+                warmup_samples.append(q.numpy().copy())
+                
+                if adapt_step_size:
+                    self._adapt_step_size(tf.cast(i, dtype = dtype), accept_prob)
+                
+                # Adapt mass matrix at the midpoint of warmup
+                if (adapt_mass_matrix and i % 50 == 0):
+                    self._adapt_mass_matrix([tf.constant(s, dtype=dtype)
+                         for s in warmup_samples])
+                    if verbose:
+                        print(f"  [warmup {i}] mass matrix adapted")
+                
+                # At the end of warmup, fix the step size
+                if i == num_warmup - 1:
+                    if adapt_step_size:
+                        self.step_size.assign(
+                            tf.exp(self._log_step_size_bar))
+                    if verbose:
+                        print(f"  Warmup complete.  "
+                              f"step_size = {self.step_size.numpy():.6g}, "
+                              f"accept rate = "
+                              f"{self.accept_count / self.total_count:.2%}")
+                        self.accept_count = 0
+                        self.total_count = 0
+
+            # ---- Collect samples after warmup ----
+            else:
+                sample_idx = i - num_warmup
+                if sample_idx % thin == 0:
+                    self.samples.append(q.numpy().copy())
+                    self.log_probs.append(float(log_prob.numpy()))
+
+            # ---- Progress reporting ----
+            if verbose and (i + 1) % max(1, 5) == 0:
+                phase = "warmup" if is_warmup else "sampling"
+                rate = (self.accept_count /
+                        max(1, self.total_count))
+                print(f"  [{phase}  iter {i + 1}/{total_iterations}]  "
+                      f"log_post = {float(log_prob.numpy()):.2f}  "
+                      f"accept = {rate:.2%}  "
+                      f"params = {get_model_params(self.model)}"
+                      #f"stds = {tf.sqrt(1/self.mass_inv)}"
+                      f"eps = {float(self.step_size.numpy()):.4g}")
+
+        accept_rate = (self.accept_count /
+                       max(1, self.total_count))
+        if verbose:
+            print(f"\nSampling done.  "
+                  f"Collected {len(self.samples)} samples, "
+                  f"accept rate = {accept_rate:.2%}")
+
+        return (np.array(self.samples),
+                np.array(self.log_probs),
+                accept_rate)
+
+    # ------------------------------------------------------------------
+    # Convenience: unflatten samples into named parameter dicts
+    # ------------------------------------------------------------------
+    def unflatten_samples(self, flat_samples):
+        """
+        Convert an array of flat samples (N, D) into a list of
+        dictionaries keyed by weight index.
+        
+        Returns
+        -------
+        list[dict[int, np.ndarray]]
+        """
+        results = []
+        for s in flat_samples:
+            d = {}
+            offset = 0
+            for idx, sh, sz in zip(self.param_indices,
+                                    self._shapes, self._sizes):
+                d[idx] = np.reshape(s[offset:offset + sz], sh)
+                offset += sz
+            results.append(d)
+        return results
+    
+    def get_param_samples(self, flat_samples, weight_index):
+        """
+        Extract the samples for a single model weight (by its position in
+        ``model.weights``) from the flat sample array.
+
+        Parameters
+        ----------
+        flat_samples : ndarray, shape (N, D)
+        weight_index : int
+            Index into ``model.weights``.
+
+        Returns
+        -------
+        ndarray, shape (N, *weight_shape)
+        """
+        if weight_index not in self.param_indices:
+            raise ValueError(
+                f"Weight {weight_index} is not among the sampled indices "
+                f"{self.param_indices}")
+        offset = 0
+        for idx, sh, sz in zip(self.param_indices,
+                                self._shapes, self._sizes):
+            if idx == weight_index:
+                return flat_samples[:, offset:offset + sz].reshape(
+                    (-1,) + tuple(sh))
+            offset += sz
+
+
+# ---------------------------------------------------------------------------
+# High-level convenience function
+# ---------------------------------------------------------------------------
+
+def run_hmc(model, tracks, masks, batch_size,
+            num_samples=500,
+            num_warmup=200,
+            step_size=1e-3,
+            num_leapfrog_steps=10,
+            thin=1,
+            log_prior_fn=None,
+            param_indices=None,
+            target_accept_rate=0.65,
+            verbose=True):
+    """
+    One-call interface to run HMC on an ExaTrack model.
+
+    Parameters
+    ----------
+    model : tf.keras.Model
+        The likelihood model returned by ``build_model``.
+    tracks : ndarray
+        Shape (N, 1, T, 1, 1, D).
+    masks : ndarray
+        Shape (N, T).
+    batch_size : int
+    num_samples, num_warmup, step_size, num_leapfrog_steps, thin :
+        HMC configuration (see ``HMCSampler``).
+    log_prior_fn : callable or None
+    param_indices : list[int] or None
+    target_accept_rate : float
+    verbose : bool
+
+    Returns
+    -------
+    sampler : HMCSampler
+        The sampler object (holds all state, can be resumed).
+    samples : ndarray  (M, D)
+        Flat posterior samples.
+    log_probs : ndarray  (M,)
+        Log-posterior values.
+    accept_rate : float
+    """
+    sampler = HMCSampler(
+        model=model,
+        tracks=tracks,
+        masks=masks,
+        batch_size=batch_size,
+        step_size=step_size,
+        num_leapfrog_steps=num_leapfrog_steps,
+        log_prior_fn=log_prior_fn,
+        param_indices=param_indices,
+        target_accept_rate=target_accept_rate)
+
+    samples, log_probs, accept_rate = sampler.sample(
+        num_samples=num_samples,
+        num_warmup=num_warmup,
+        thin=thin,
+        verbose=verbose)
+
+    return sampler, samples, log_probs, accept_rate
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+def effective_sample_size(samples):
+    """
+    Estimate ESS for each parameter dimension using the initial positive
+    sequence estimator (Geyer 1992).
+    
+    Parameters
+    ----------
+    samples : ndarray, shape (N, D)
+    
+    Returns
+    -------
+    ess : ndarray, shape (D,)
+    """
+    n, d = samples.shape
+    ess = np.zeros(d)
+    for j in range(d):
+        x = samples[:, j]
+        x = x - x.mean()
+        # Auto-correlation via FFT
+        fft_x = np.fft.fft(x, n=2 * n)
+        acf = np.fft.ifft(fft_x * np.conj(fft_x)).real[:n]
+        acf /= acf[0]
+        # Sum consecutive pairs; stop when the sum turns negative
+        sum_rho = 0.0
+        for t in range(0, n - 1, 2):
+            rho_pair = acf[t] + (acf[t + 1] if t + 1 < n else 0.0)
+            if rho_pair < 0:
+                break
+            sum_rho += rho_pair
+        tau = -1.0 + 2.0 * sum_rho
+        ess[j] = n / max(tau, 1.0)
+    return ess
+
+def r_hat(chains):
+    """
+    Compute the Gelman-Rubin R-hat statistic for multiple chains.
+
+    Parameters
+    ----------
+    chains : list of ndarray, each shape (N, D)
+        Multiple chains (at least 2).
+
+    Returns
+    -------
+    rhat : ndarray, shape (D,)
+    """
+    m = len(chains)
+    n = chains[0].shape[0]
+    
+    chain_means = np.array([c.mean(axis=0) for c in chains])  # (m, d)
+    grand_mean = chain_means.mean(axis=0)                       # (d,)
+    
+    B = n / (m - 1.0) * np.sum(
+        (chain_means - grand_mean[None, :]) ** 2, axis=0)
+    
+    W = np.mean([c.var(axis=0, ddof=1) for c in chains], axis=0)
+    
+    var_hat = (n - 1.0) / n * W + B / n
+    return np.sqrt(var_hat / (W + 1e-30))
+
+
+
+
+
+
+
+
 
 
 
