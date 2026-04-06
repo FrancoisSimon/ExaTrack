@@ -26,6 +26,9 @@ I uploaded a few of the movies I used. This requires to re-select one or a few t
 
 
 ## Running ExaTrack on GPU with anaconda and spyder IDE
+
+Right click on the box ´code´ and ´download ZIP´. Unzip the package are the desired location.
+
 `conda create -n PyExaTrack python=3.10.11`
 
 `conda activate PyExaTrack`
@@ -34,7 +37,7 @@ I uploaded a few of the movies I used. This requires to re-select one or a few t
 
 `conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0`
 
-`pip install -r PATH\TO\requirements.txt`
+`pip install -r PATH\TO\ExaTrack\folder\requirements.txt`
 
 **WARNING**: On my hands, jit compilation fails with GPU computing. If using GPU parallelization, make sure to set `jit_compile=False` in the exatrack.py file.
 
