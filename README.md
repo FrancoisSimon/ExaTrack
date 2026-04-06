@@ -2,6 +2,10 @@
 
 This repository contains the ExaTrack project which makes the syntesis between our previous tools ExTrack and aTrack. The goal of this project is to create an user-friendly tracking analysis tool able to account for multiple states of various types of motions and complex transitions between them. More precisely, this tool enable to account for immobile, diffusive, directed and confined motion and for transitions between these types of motion. This tool enables scientists to analyse their samples by characterizing the different types of motion and the transition kinetics, as well as labeling their tracks with state probabilities.
 
+# Testing versions
+
+Branch created to test ExaTrack_while_segment.py and ExaTrack_while_segment_infer_vars.py. Both versions possess the function build_segment_model that builds a model that segments tracks across batches (stateful model). ExaTrack_while_segment_infer_vars.py also possess a function to infer the hidden states of the model.
+
 # Installation with anaconda
 ## To run ExaTrack on CPU with anaconda and spyder IDE:
 
