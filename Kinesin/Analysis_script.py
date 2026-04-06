@@ -5,7 +5,6 @@ Created on Sat Mar 21 12:52:48 2026
 @author: Franc
 """
 
-
 # %%
 import numpy as np
 import tensorflow as tf
@@ -53,9 +52,9 @@ for i in range(nb_rows):
         plt.text(track[0,0],track[0,1], str(ID), fontsize = 10)
 plt.gca().set_aspect('equal', adjustable='box')
 
-# tracks identified as stepping directed from paths = glob(r'C:\Users\Franc\Data\Kinesin_minflux\Tracks/*Minflux_642_L75_pho100_lp15_BGdis40k_hex3_dt300us_cfr09_dp1*')
-IDs = [63, 94, 124, 156, 155, 171, 159, 161, 233, 347, 310, 273, 466, 467, 464]
-IDs = [ 466, 310, 161]
+# Must identify a few directed tracks with stepping motion before proceeding to the next steps
+IDs = []
+
 tracks = [tracks[i] for i in IDs]
 len(tracks)
 
