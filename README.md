@@ -6,6 +6,13 @@ This repository contains the ExaTrack project which makes the syntesis between o
 
 Branch created to test ExaTrack_while_segment.py and ExaTrack_while_segment_infer_vars.py. Both versions possess the function build_segment_model that builds a model that segments tracks across batches (stateful model). ExaTrack_while_segment_infer_vars.py also possess a function to infer the hidden states of the model.
 
+# Experimental Datasets
+## PBP2
+PBP2 dataset is too big to upload on GitHub (400MB). I can share it on demand.
+## Kinesin
+I uploaded a few of the movies I used. This requires to re-select one or a few tracks with clear stepping behavior. 
+
+
 # Installation with anaconda
 ## To run ExaTrack on CPU with anaconda and spyder IDE:
 
