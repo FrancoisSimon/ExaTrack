@@ -5,27 +5,6 @@ Created on Sat Mar 21 12:52:48 2026
 @author: Franc
 """
 
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Mar 19 10:04:58 2026
-
-@author: Franc
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Mar 17 16:08:27 2026
-
-@author: Franc
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Feb 17 13:28:37 2026
-
-@author: Franc
-"""
-
 # %%
 import numpy as np
 import tensorflow as tf
