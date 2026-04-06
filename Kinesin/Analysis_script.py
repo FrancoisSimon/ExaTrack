@@ -52,7 +52,7 @@ for i in range(nb_rows):
         plt.text(track[0,0],track[0,1], str(ID), fontsize = 10)
 plt.gca().set_aspect('equal', adjustable='box')
 
-# Must identify a few directed tracks with stepping motion before proceeding to the next steps
+# Must identify a few directed tracks with stepping motion from the above plot before proceeding to the next steps
 IDs = [0,1,2]
 
 tracks = [tracks[i] for i in IDs]
