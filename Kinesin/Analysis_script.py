@@ -5,6 +5,7 @@ Created on Sat Mar 21 12:52:48 2026
 @author: Franc
 """
 
+
 # %%
 import numpy as np
 import tensorflow as tf
@@ -16,6 +17,7 @@ import sys
 sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack directory to the system path
 import exatrack_while_segment as exatrack
 from glob import glob
+import random
 
 paths = glob(r'C:\Users\Franc\Data\Kinesin_minflux\Tracks/*Minflux_642_L75_pho100_lp15_BGdis40k_hex3_dt300us_cfr09_dp1*')
 
@@ -30,7 +32,6 @@ tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths[:], # path of
 
 for i in range(len(tracks)):
     tracks[i] = tracks[i] - tracks[i][:1] + np.random.normal(0,1,(1,2))
-
 
 ls = [len(track) for track in tracks]
 np.mean(ls)
@@ -155,8 +156,7 @@ print(likelihood)
 with tf.device(device):
     history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
 
-params = get_model_params(model, track_segmentation = True)
-preds = pred_model.predict((tracks, masks), batch_size = batch_size)
+#params = eget_model_params(model, track_segmentation = True)
 '''
 {'Model types': array(['Directed motion', 'Directed motion'], dtype='<U15'),
  'anomalous factors': <tf.Tensor: shape=(2,), dtype=float64, numpy=array([1.10854021e-07, 4.15030453e-03])>,
@@ -200,6 +200,7 @@ preds = pred_model.predict((track_array, masks), batch_size = batch_size)
 
 colors = np.array([[1,0,0],
                    [0,0,1]])
+
 
 plt.figure(figsize = (20, 20))
 lim = 0.05 # MreB
