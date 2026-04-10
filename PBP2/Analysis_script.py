@@ -13,20 +13,23 @@ from matplotlib import cm
 
 # Import the ExaTrack module (ensure exatrack.py is in your path)
 import sys
-sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack directory to the system path
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import exatrack_while_segment as exatrack
 #import exatrack as exatrack
 from glob import glob
 
 
-exps = glob(r'C:\Users\Franc\Data\RodComplex\RodZ/*RodZ-IPTG*')
-paths = glob(r'C:\Users\Franc\Data\RodComplex\RodZ/*RodZ-IPTG*/*.csv')
+# TODO: Update this path to point to your RodComplex/RodZ data directory
+data_dir = r'C:\Users\Franc\Data\RodComplex\RodZ'
+exps = glob(os.path.join(data_dir, '*RodZ-IPTG*'))
+paths = glob(os.path.join(data_dir, '*RodZ-IPTG*', '*.csv'))
 
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths, # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(10, 101), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
+               dist_th = np.inf, # maximum distance allowed for consecutive positions
                frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                colnames = ['POSITION_X', 'POSITION_Y', 'FRAME', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                opt_colnames = ['QUALITY'], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                remove_no_disp = False)
@@ -145,7 +148,7 @@ results = exatrack.get_number_of_states(tracks,
 results.keys()
 log_likelihoods = np.array([results[k]['log_likelihood'] for k in range(1, 11)])
 
-plt.figure()  
+plt.figure()
 plt.plot(np.arange(1, 11), log_likelihoods)
 
 save_model_selection_results(results, save_dir = r'C:\Users\Franc\Data\RodComplex\Results/RodZ_IPTG_100_10_2')
@@ -192,7 +195,7 @@ params = np.array([#[np.log(0.015), np.log(0.001), np.log(0.00001), np.log(0.000
                    [np.log(0.015), np.log(0.03), np.log(0.1), np.log(0.002), 0],
                    [np.log(0.015), np.log(0.08), np.log(0.1), np.log(0.005), 0]], dtype = dtype)
 
-initial_params = np.array([[np.log(1)]]*nb_states, dtype = dtype) 
+initial_params = np.array([[np.log(1)]]*nb_states, dtype = dtype)
 
 transition_shapes = np.zeros((nb_states, nb_states), dtype = dtype)
 transition_rates = np.eye(nb_states, dtype = dtype)*3
@@ -209,13 +212,13 @@ vary_initial_fractions = True
 vary_transition_shapes = False
 vary_transition_rates = True
 
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -239,7 +242,7 @@ seq = exatrack.TrackSegmentSequence(tracks,
 learning_rate = 0.01
 epochs = 100
 decay_threshold = int(0.7*nb_batches*epochs)
-decay_rate = - np.log(0.001)/(0.3*nb_batches*epochs) # 
+decay_rate = - np.log(0.001)/(0.3*nb_batches*epochs) #
 device = '/GPU:0'
 shuffle = False
 verbose = 1
@@ -267,37 +270,37 @@ data = np.load(r'C:\Users\Franc\Data\Kinesin_minflux\fire\S-BIAD\608\S-BIAD608\F
 paths = glob(r'C:\Users\Franc\Data\Kinesin_minflux\fire\S-BIAD\608\S-BIAD608\Files\Astra_upload_files\07_K560N_U2OS\*.npy')
 for path in paths:
     rows = []
-    
+
     for event in data:
         if not event['vld']:
             continue  # skip invalid points
-        
+
         itr = event['itr'][-1]  # final iteration
-        
+
         row = {
             "track_id": event['tid'],
             "time": event['tim'],
-            
+
             # position (meters → convert to nm)
             "x_um": itr['loc'][0] * 1e6,
             "y_um": itr['loc'][1] * 1e6,
             "z_um": itr['loc'][2] * 1e6,
-            
+
             # precision
             "sigma_x_um": itr['ext'][0] * 1e6,
             "sigma_y_um": itr['ext'][1] * 1e6,
             "sigma_z_um": itr['ext'][2] * 1e6,
-            
+
             # photons
             "photons": itr['eco'],
             "background": itr['fbg'],
-            
+
             # quality
             "confidence": itr['cfr'],
         }
-        
+
         rows.append(row)
-    
+
     df = pd.DataFrame(rows)
     df.to_csv(r"C:\Users\Franc\Data\Kinesin_minflux\Tracks/" + path.rsplit('\\', 1)[1], index=False)
 
@@ -320,13 +323,13 @@ len(data_dict['saveloc']['loc']['xnm'])
 data_dict['saveloc']['loc']['tid']
 pd.DataFrame(data_dict['saveloc']['loc'])
 
-model, pred_model = exatrack.build_model(segment_length, # maximum number of time points in the input tracks 
+model, pred_model = exatrack.build_model(segment_length, # maximum number of time points in the input tracks
                 max_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -376,7 +379,7 @@ model.weights
  'Fractions': <tf.Tensor: shape=(4,), dtype=float64, numpy=array([6.02270597e-02, 4.74831810e-01, 4.64914103e-01, 2.70279544e-05])>}
 -70.05200958251953
 
-Out[14]: 
+Out[14]:
 [<tf.Variable 'initial_layer_constraints/recurrence_variables:0' shape=(3, 5) dtype=float64, numpy=
  array([[-3.53534433, -3.73022428, -1.12726629, -5.58415354,  0.        ],
         [-6.44016471, -2.45962517, -2.71475827, -7.63083379,  0.        ],
@@ -414,7 +417,7 @@ for i in range(nb_rows):
         cur_color = preds[offset+i*nb_rows+j][mask, :len(cs)]@cs
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
         plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
-        
+
         plt.scatter(track[:,0], track[:,1] , c = cur_color, s = 7)
         plt.scatter(track[0,0], track[0,1] , c = 'k', s = 10, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
@@ -429,9 +432,9 @@ Analyse the EGCG condition
 
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths[6:], # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(30,81), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
+               dist_th = np.inf, # maximum distance allowed for consecutive positions
                frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                colnames = ['POSITION_X', 'POSITION_Y', 'FRAME', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                opt_colnames = ['QUALITY'], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                remove_no_disp = True)
@@ -462,7 +465,7 @@ params = np.array([[np.log(0.03), np.log(0.01), np.log(0.1), np.log(0.001), 0],
                    [np.log(0.03), np.log(0.05), np.log(0.1), np.log(0.002), 0],
                    [np.log(0.03), np.log(0.15), np.log(0.1), np.log(0.005), 0]], dtype = dtype)
 
-initial_params = np.array([[np.log(100), np.log(0.05)]]*nb_states, dtype = dtype) 
+initial_params = np.array([[np.log(100), np.log(0.05)]]*nb_states, dtype = dtype)
 
 transition_shapes = np.zeros((nb_states, nb_states), dtype = dtype)
 transition_rates = np.eye(nb_states, dtype = dtype)*4.5
@@ -479,13 +482,13 @@ vary_initial_fractions = True
 vary_transition_shapes = False
 vary_transition_rates = True
 
-model, pred_model = build_model(track_len, # maximum number of time points in the input tracks 
+model, pred_model = build_model(track_len, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -601,9 +604,9 @@ batch_size = 100
 track_len = 30
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths[6:], # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(5,track_len+1), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
+               dist_th = np.inf, # maximum distance allowed for consecutive positions
                frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                colnames = ['POSITION_X', 'POSITION_Y', 'FRAME', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                opt_colnames = ['QUALITY'], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                remove_no_disp = True)
@@ -636,7 +639,7 @@ params = np.array([[np.log(0.03), np.log(0.01), np.log(0.1), np.log(0.001), 0],
                    [np.log(0.03), np.log(0.05), np.log(0.1), np.log(0.002), 0],
                    [np.log(0.03), np.log(0.15), np.log(0.05), np.log(0.005), 0]], dtype = dtype)
 
-initial_params = np.array([[np.log(100), np.log(0.05)]]*nb_states, dtype = dtype) 
+initial_params = np.array([[np.log(100), np.log(0.05)]]*nb_states, dtype = dtype)
 
 transition_shapes = np.zeros((nb_states, nb_states), dtype = dtype)
 transition_rates = np.eye(nb_states, dtype = dtype)*4.5
@@ -653,13 +656,13 @@ vary_initial_fractions = True
 vary_transition_shapes = False
 vary_transition_rates = True
 
-model, pred_model = build_model(track_len, # maximum number of time points in the input tracks 
+model, pred_model = build_model(track_len, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -715,7 +718,7 @@ for i in range(nb_rows):
         cur_color = preds[offset+i*nb_rows+j][mask, :len(cs)]@cs
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
         plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
-        
+
         plt.scatter(track[:,0], track[:,1] , c = cur_color, s = 7)
         plt.scatter(track[0,0], track[0,1] , c = 'k', s = 10, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
@@ -730,9 +733,9 @@ paths = glob(r'C:\Users\Franc\Data\RodComplex\PBP2/2020-12-18_PBP2-IPTG25-60ms/*
 
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths, # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(5, 201), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
+               dist_th = np.inf, # maximum distance allowed for consecutive positions
                frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                colnames = ['POSITION_X', 'POSITION_Y', 'FRAME', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                opt_colnames = ['QUALITY'], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                remove_no_disp = True)
@@ -867,7 +870,7 @@ results = exatrack.get_number_of_states(tracks,
 results.keys()
 log_likelihoods = np.array([results[k]['log_likelihood'] for k in range(1, 11)])
 
-plt.figure()  
+plt.figure()
 plt.plot(np.arange(1, 11), log_likelihoods)
 
 save_model_selection_results(results, save_dir = r'C:\Users\Franc\Data\RodComplex\Results/PBP2_100_10')
@@ -886,68 +889,68 @@ analysis for a fixed number of states
 exps = glob(r'C:\Users\Franc\Data\RodComplex\PBP2\*60ms*')
 for exp in exps[:]:
     paths = glob(exp + '/*.csv')
-    
+
     tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths, # path of the file to read or list of paths to read multiple files.
                    lengths = np.arange(5, 301), # number of positions per track accepted (take the first position if longer than max
-                   dist_th = np.inf, # maximum distance allowed for consecutive positions 
+                   dist_th = np.inf, # maximum distance allowed for consecutive positions
                    frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-                   fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+                   fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                    colnames = ['POSITION_X', 'POSITION_Y', 'FRAME', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                    opt_colnames = ['QUALITY'], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                    remove_no_disp = True)
-    
+
     quality = opt_metrics['QUALITY']
     # Prepare parameters for a 4 states model
     nb_states = 3
-    
+
     # Initialize with generic guesses
     params = np.array([[np.log(0.015), np.log(0.001), np.log(0.001), np.log(0.0001), 1],
                        #[np.log(0.015), np.log(0.001), np.log(0.002), np.log(0.0001), 1],
                        #[np.log(0.015), np.log(0.01), np.log(0.1), np.log(0.0001), 0],
                        [np.log(0.02), np.log(0.03), np.log(0.1), np.log(0.01), 0],
                        [np.log(0.02), np.log(0.08), np.log(0.1), np.log(0.01), 0]], dtype='float64')
-    
+
     initial_params = np.array([[np.log(1.0)]]*nb_states, dtype='float64')
-    
+
     # Equal initial fractions
     initial_fractions = np.array([[0]*nb_states+[-5.0]], dtype='float64')
-    
+
     # Transition matrices
     transition_rates = 4 * np.eye(nb_states, dtype='float64')
     #transition_rates[0,0] = 5
     #transition_rates[1,1] = 3
-    
+
     transition_shapes = np.zeros((nb_states, nb_states), dtype='float64')
     tf.math.softmax(transition_rates, 1)
-    
+
     # we fix the localization error of the two bound states otherwise the short lived state does not appear to the profit of two long lived states with different localization errors
     vary_params = np.ones(params.shape)
     #vary_params[:2, 0] = 0
     vary_initial_params = True
     vary_initial_fractions = True
     vary_transition_shapes = False
-    
-    # We prevent transitions between the two bound states to improve readability 
+
+    # We prevent transitions between the two bound states to improve readability
     vary_transition_rates = np.ones(transition_rates.shape)
     #vary_transition_rates[:2, :2] = 0
     tf.math.softmax(transition_rates)
     batch_size = 400
     nb_batches = len(tracks)//batch_size
     device = '/GPU:0'
-    
+
     estimated_density = 0.00001 # Negligible density
     nb_dims = 2
     sequence_length = 5
     max_linking_distance = 1
     segment_length = 10
-    
-    model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+
+    model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                     nb_states, # Number of states of their model
                     params, # recurrent parameters of the model
                     initial_params, # initial parameters of the model
                     transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                     transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                    initial_fractions, 
+                    initial_fractions,
                     batch_size, # number of tracks analysed at the same time
                     nb_dims = nb_dims, # Number of dimensions of the tracks
                     sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -958,17 +961,17 @@ for exp in exps[:]:
                     vary_initial_fractions = vary_initial_fractions,
                     vary_transition_shapes = vary_transition_shapes,
                     vary_transition_rates = vary_transition_rates)
-    
+
     model.weights
-    
+
     seq = exatrack.TrackSegmentSequence(tracks,
         batch_size=batch_size,
         segment_length=segment_length,
         min_segment_length=4,
         cutoff_batch_treshhold=0.5)
-    
+
     nb_batches = len(seq)
-    
+
     #all_masks = masks
     learning_rate = 0.01
     nb_batches
@@ -982,21 +985,21 @@ for exp in exps[:]:
     shuffle = True
     verbose = 1
     print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
-    
+
     lr = exatrack.WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.99, beta_2=0.999, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
     MLE_loss = exatrack.MLE_loss
     model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
-    
+
     preds = model.predict(seq)
     likelihood = MLE_loss(preds, preds).numpy()
     print(likelihood)
-    
+
     with tf.device(device):
         history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
-    
+
     model.save_weights(r'C:\Users\Franc\Data\RodComplex\Results\PBP2_3states/' + exp.rsplit('\\')[-1]  + '_weights.tf')
-    
+
     weights = model.get_weights()
     model.load_weights(r'C:\Users\Franc\Data\RodComplex\Results\PBP2_3states/' + exp.rsplit('\\')[-1]  + '_weights.tf')
 
@@ -1030,7 +1033,7 @@ vary_initial_params = True
 vary_initial_fractions = True
 vary_transition_shapes = False
 
-# We prevent transitions between the two bound states to improve readability 
+# We prevent transitions between the two bound states to improve readability
 vary_transition_rates = np.ones(transition_rates.shape)
 #vary_transition_rates[:2, :2] = 0
 tf.math.softmax(transition_rates)
@@ -1044,13 +1047,13 @@ sequence_length = 5
 max_linking_distance = 1
 segment_length = 10
 
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -1082,7 +1085,7 @@ for exp in exps[:]:
     equ_fractions = exatrack.equilibrium_distribution(params['transition rates'])
     params['equilibrium fractions'] = equ_fractions
     all_params.append(params)
-    
+
 for params in all_params:
     print(params['equilibrium fractions'])
 
@@ -1105,26 +1108,26 @@ exps = glob(r'C:\Users\Franc\Data\RodComplex\PBP2_2022\All_60ms\C*')
 exp = exps[12]
 for exp in exps[:]:
     paths = glob(exp + '/*.csv')
-    
+
     tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths, # path of the file to read or list of paths to read multiple files.
                    lengths = np.arange(5, 301), # number of positions per track accepted (take the first position if longer than max
-                   dist_th = np.inf, # maximum distance allowed for consecutive positions 
+                   dist_th = np.inf, # maximum distance allowed for consecutive positions
                    frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-                   fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+                   fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                    colnames = ['POSITION_X', 'POSITION_Y', 'POSITION_T', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                    opt_colnames = [], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                    remove_no_disp = True)
-    
+
     frames[1][1:] -frames[1][:-1]
     for i in range(len(tracks)):
         tracks[i] = tracks[i] - tracks[i][:1] + np.random.normal(0,1,(1,2))
-    
+
     # Prepare parameters for a 4 states model
     nb_states = 3
-    
+
     # Initialize with generic guesses
     params = np.array([[np.log(0.02), np.log(0.001), np.log(0.001), np.log(0.0001), 1],
-                       #[np.log(0.02), np.log(0.001), np.log(0.1), np.log(0.0001), 0], 
+                       #[np.log(0.02), np.log(0.001), np.log(0.1), np.log(0.0001), 0],
                        #[np.log(0.015), np.log(0.01), np.log(0.1), np.log(0.0001), 0],
                        [np.log(0.02), np.log(0.03), np.log(0.1), np.log(0.01), 0],
                        [np.log(0.02), np.log(0.08), np.log(0.1), np.log(0.01), 0]], dtype='float64')
@@ -1139,12 +1142,12 @@ for exp in exps[:]:
     111/111 [==============================] - 38s 346ms/step - loss: -29.4276
     '''
     initial_params = np.array([[np.log(1.0)]]*nb_states, dtype='float64')
-    
+
     # Equal initial fractions
     initial_fractions = np.array([[0]*nb_states+[-5.0]], dtype='float64')
-    
+
     # Transition matrices
-        
+
     # Transition matrices
     transition_rates = 4 * np.eye(nb_states, dtype='float64')
     transition_rates[0,0] = 5
@@ -1155,35 +1158,35 @@ for exp in exps[:]:
     '''
     transition_shapes = np.zeros((nb_states, nb_states), dtype='float64')
     tf.math.softmax(transition_rates, 1)
-    
+
     # we fix the localization error of the two bound states otherwise the short lived state does not appear to the profit of two long lived states with different localization errors
     vary_params = np.ones(params.shape)
     vary_params[:, 0] = 0
     vary_initial_params = True
     vary_initial_fractions = True
     vary_transition_shapes = False
-    
-    # We prevent transitions between the two bound states to improve readability 
+
+    # We prevent transitions between the two bound states to improve readability
     vary_transition_rates = np.ones(transition_rates.shape)
     #vary_transition_rates[:2, :2] = 0
     tf.math.softmax(transition_rates)
     batch_size = 400
     nb_batches = len(tracks)//batch_size
     device = '/GPU:0'
-    
+
     estimated_density = 0.00001 # Negligible density
     nb_dims = 2
     sequence_length = 10
     max_linking_distance = 1
     segment_length = 10
-    
-    model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+
+    model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                     nb_states, # Number of states of their model
                     params, # recurrent parameters of the model
                     initial_params, # initial parameters of the model
                     transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                     transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                    initial_fractions, 
+                    initial_fractions,
                     batch_size, # number of tracks analysed at the same time
                     nb_dims = nb_dims, # Number of dimensions of the tracks
                     sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -1194,15 +1197,15 @@ for exp in exps[:]:
                     vary_initial_fractions = vary_initial_fractions,
                     vary_transition_shapes = vary_transition_shapes,
                     vary_transition_rates = vary_transition_rates)
-    
+
     seq = exatrack.TrackSegmentSequence(tracks,
         batch_size=batch_size,
         segment_length=segment_length,
         min_segment_length=4,
         cutoff_batch_treshhold=0.5)
-    
+
     nb_batches = len(seq)
-    
+
     #all_masks = masks
     learning_rate = 0.01
     nb_batches
@@ -1211,39 +1214,39 @@ for exp in exps[:]:
     decay_threshold = epoch_decay*nb_batches
     decay_rate = 0.005
     np.exp(-20*64*0.001)
-    
+
     device = '/GPU:0'
     shuffle = True
     verbose = 1
     print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
-    
+
     lr = exatrack.WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.99, beta_2=0.999, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
     MLE_loss = exatrack.MLE_loss
     model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
-    
+
     preds = model.predict(seq)
     likelihood = MLE_loss(preds, preds).numpy()
     print(likelihood)
-    
+
     with tf.device(device):
         history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
-    
+
     model.save_weights(r'C:\Users\Franc\Data\RodComplex\Results\PBP2_2022_3states/' + exp.rsplit('\\')[-1]  + '_weights.tf')
-    
+
     weights = model.get_weights()
     model.load_weights(r'C:\Users\Franc\Data\RodComplex\Results\PBP2_3states/' + exp.rsplit('\\')[-1]  + '_weights.tf')
-    
+
     track_array, _, masks = exatrack.padding(tracks, batch_size = batch_size)
     track_array = tf.constant(track_array[:,None, :, None, None, :nb_dims], dtype = 'float64')
-    
-    _, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks 
+
+    _, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks
                     nb_states, # Number of states of their model
                     params = weights[0], # recurrent parameters of the model
                     initial_params = weights[1], # initial parameters of the model
                     transition_rates = weights[7], # transition rates for each pair of states (gamma distributed transition lifetimes)
                     transition_shapes = weights[8], # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                    initial_fractions = weights[2], 
+                    initial_fractions = weights[2],
                     batch_size = batch_size, # number of tracks analysed at the same time
                     nb_dims = nb_dims, # Number of dimensions of the tracks
                     sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -1254,9 +1257,9 @@ for exp in exps[:]:
                     vary_initial_fractions = vary_initial_fractions,
                     vary_transition_shapes = vary_transition_shapes,
                     vary_transition_rates = vary_transition_rates)
-    
+
     preds = pred_model.predict((track_array, masks), batch_size = batch_size)
-    
+
     colors = np.array([[1,0,0],
                        [1,1,0],
                        [0,1,1],
@@ -1350,7 +1353,7 @@ vary_initial_params = True
 vary_initial_fractions = True
 vary_transition_shapes = False
 
-# We prevent transitions between the two bound states to improve readability 
+# We prevent transitions between the two bound states to improve readability
 vary_transition_rates = np.ones(transition_rates.shape)
 vary_transition_rates[:2, :2] = 0
 tf.math.softmax(transition_rates)
@@ -1364,13 +1367,13 @@ sequence_length = 5
 max_linking_distance = 1
 segment_length = 10
 
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -1402,7 +1405,7 @@ for exp in exps[:]:
     equ_fractions = exatrack.equilibrium_distribution(params['transition rates'])
     params['equilibrium fractions'] = equ_fractions
     all_params.append(params)
-    
+
 for params in all_params:
     print(params['equilibrium fractions'])
 
@@ -1425,9 +1428,9 @@ paths = glob(exp + '/*.csv')
 
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths, # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(5, 301), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
+               dist_th = np.inf, # maximum distance allowed for consecutive positions
                frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                colnames = ['POSITION_X', 'POSITION_Y', 'POSITION_T', 'TRACK_ID'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                opt_colnames = [], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                remove_no_disp = True)
@@ -1521,7 +1524,7 @@ results = exatrack.get_number_of_states(tracks,
 results.keys()
 log_likelihoods = np.array([results[k]['log_likelihood'] for k in range(1, 11)])
 
-plt.figure()  
+plt.figure()
 plt.plot(np.arange(1, 11), log_likelihoods)
 
 save_model_selection_results(results, save_dir = r'C:\Users\Franc\Data\RodComplex\Results/PBP2_100_10')

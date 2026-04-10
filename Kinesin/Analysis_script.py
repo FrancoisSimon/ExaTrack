@@ -13,18 +13,21 @@ from matplotlib import cm
 
 # Import the ExaTrack module (ensure exatrack.py is in your path)
 import sys
-sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack directory to the system path
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import exatrack_while_segment as exatrack
 from glob import glob
 import random
 
-paths = glob(r'C:\Users\Franc\Data\Kinesin_minflux\Tracks/*Minflux_642_L75_pho100_lp15_BGdis40k_hex3_dt300us_cfr09_dp1*')
+# TODO: Update this path to point to your Kinesin_minflux data directory
+data_dir = r'C:\Users\Franc\Data\Kinesin_minflux\Tracks'
+paths = glob(os.path.join(data_dir, '*Minflux_642_L75_pho100_lp15_BGdis40k_hex3_dt300us_cfr09_dp1*'))
 
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths[:], # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(100, 11000), # number of positions per track accepted (take the first position if longer than max
-               dist_th = np.inf, # maximum distance allowed for consecutive positions 
+               dist_th = np.inf, # maximum distance allowed for consecutive positions
                frames_boundaries = [-np.inf, np.inf], # min and max frame values allowed for peak detection
-               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '. 
+               fmt = 'csv', # format of the document to be red, 'csv' or 'pkl', one can also just specify a separator e.g. ' '.
                colnames = ['x_um', 'y_um', 'time', 'track_id'],  # if multiple columns are required to identify a track, the string used to identify the track ID can be replaced by a list of strings represening the column names e.g. ['TRACK_ID', 'Movie_ID']
                opt_colnames = ['photons', 'sigma_x_um', 'sigma_y_um'], # list of additional metrics to collect e.g. ['QUALITY', 'ID']
                remove_no_disp = False)
@@ -87,7 +90,7 @@ nb_states = 2
 params = np.array([[np.log(0.002), np.log(0.002), np.log(0.0001), np.log(0.00005), 1],
                    [np.log(0.003), np.log(0.005), np.log(0.002), np.log(0.0001), 1]], dtype = dtype)
 
-initial_params = np.array([[np.log(1)]]*nb_states, dtype = dtype) 
+initial_params = np.array([[np.log(1)]]*nb_states, dtype = dtype)
 
 transition_shapes = np.zeros((nb_states, nb_states), dtype = dtype)
 transition_shapes[0,1]=np.log(3)
@@ -108,13 +111,13 @@ vary_initial_fractions = True
 vary_transition_shapes = True
 vary_transition_rates = True
 
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -139,7 +142,7 @@ seq = exatrack.TrackSegmentSequence(tracks,
 learning_rate = 0.01
 epochs = 500
 decay_threshold = int(0.7*nb_batches*epochs)
-decay_rate = - np.log(0.001)/(0.3*nb_batches*epochs) # 
+decay_rate = - np.log(0.001)/(0.3*nb_batches*epochs) #
 device = '/CPU:0'
 shuffle = False
 verbose = 1
@@ -177,13 +180,13 @@ weights = model.get_weights()
 track_array, _, masks = exatrack.padding(tracks, batch_size = batch_size)
 track_array = tf.constant(track_array[:,None, :, None, None, :nb_dims], dtype = 'float64')
 
-_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks 
+_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params = weights[0], # recurrent parameters of the model
                 initial_params = weights[1], # initial parameters of the model
                 transition_rates = weights[7], # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes = weights[8], # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions = weights[2], 
+                initial_fractions = weights[2],
                 batch_size = batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -222,13 +225,13 @@ plt.gca().set_aspect('equal', adjustable='box')
 # Then we change version to infer the real positions and the velocity vectors (we could have used this new version from the beginning)
 import exatrack_while_segment_infer_vars as exatrack
 
-_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks 
+_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params = weights[0], # recurrent parameters of the model
                 initial_params = weights[1], # initial parameters of the model
                 transition_rates = weights[7], # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes = weights[8], # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions = weights[2], 
+                initial_fractions = weights[2],
                 batch_size = batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -247,17 +250,17 @@ pos_mean, anomalous_mean = exatrack.extract_hidden_variables(All_coefs, All_bias
 def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, nb_states=3, dt=1):
     if colors is None:
         colors = np.array([[1, 0, 0], [0, 0, 1]])[:nb_states]
-    
+
     #ID = random.randint(0, len(tracks) - 1)
     mask = masks[ID].astype(bool)
     track = tracks[ID]
     p = preds[ID, mask][:, :-1]
-    
+
     refined = pos_mean[ID][mask[1:]]
     p_refined = preds[ID, mask][1:, :-1]
     anomalous_vect = anomalous_mean[ID, mask[1:]]
     fig, axes = plt.subplots(1, 4, figsize=(18, 4))
-    
+
     # 1) Raw track with state labels
     ax = axes[0]
     ax.plot(track[:, 0], track[:, 1], ':k', alpha=0.5)
@@ -267,11 +270,11 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     ax.set_title(f'Raw track (ID={ID}, len={len(track)})')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-    
+
     # Store limits from first plot
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
-    
+
     # 2) Refined track with state labels (same limits as raw)
     ax = axes[1]
     ax.plot(refined[:, 0], refined[:, 1], ':k', alpha=0.5)
@@ -283,17 +286,17 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     ax.set_title('Refined track')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-    
+
     # 3) Velocity vs time
     ax = axes[2]
     disp_raw = np.sqrt(np.sum(np.diff(track, axis=0)**2, axis=1)) / dt
     disp_refined = np.sqrt(np.sum(np.diff(refined, axis=0)**2, axis=1)) / dt
     disp_ano = np.sqrt(np.sum(anomalous_vect**2, axis=1)) / dt
     anomalous_mean.shape
-    
+
     t_raw = np.arange(len(disp_raw))
     t_refined = np.arange(len(disp_refined))
-    
+
     ax.plot(t_raw, disp_raw, '-', color='gray', alpha=0.5, label='Raw displacements')
     #ax.scatter(t_raw, disp_raw, c=p[1:] @ colors, s=15, zorder=3)
     ax.plot(t_refined, disp_refined, '-', color=[0.9, 0.3, 0.3], alpha=0.5, label='Refined displacements (MAP)')
@@ -304,10 +307,10 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     ax.legend()
     # 3) Velocity vs time
     ax = axes[3]
-    
+
     t_raw = np.arange(len(disp_raw))
     t_refined = np.arange(len(disp_refined))
-    
+
     #ax.scatter(t_raw, disp_raw, c=p[1:] @ colors, s=15, zorder=3)
     ax.plot(t_refined, disp_refined, '-', color=[0.9, 0.3, 0.3], alpha=0.5, label='Refined displacements (MAP)')
     #ax.scatter(t_refined, disp_refined, c=p_refined[1:] @ colors, s=15, zorder=3, marker='s')
@@ -315,15 +318,15 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     #plt.scatter(t_refined, disp_ano[1:], c=p[2:], s=10, zorder=4)
     ax.plot(t_refined, disp_ano[1:], color = [0.2, 0.8, 0], label = 'Hidden velocity (MAP)')
     ax.set_ylim(0, np.quantile(disp_ano[1:], 0.9)*1.4)
-    
+
     ax.set_title('Velocity')
     ax.set_xlabel('Time (frames)')
     ax.set_ylabel('Displacement / dt')
     ax.legend()
-    
+
     plt.tight_layout()
     plt.show()
-    
+
 for ID in range(len(tracks)):
     plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, nb_states=3, dt=1)
 
