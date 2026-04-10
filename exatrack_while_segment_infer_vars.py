@@ -392,7 +392,6 @@ def read_table(paths, # path of the file to read or list of paths to read multip
     for path in paths:
         if fmt == 'csv':
             data = pd.read_csv(path, sep=',', low_memory=False)
-            data['FRAME']
             #data = data.dropna()
         elif fmt == 'pkl':
             data = pd.read_pickle(path)
