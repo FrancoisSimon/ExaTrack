@@ -2,17 +2,6 @@
 
 This repository contains the ExaTrack project which makes the syntesis between our previous tools ExTrack and aTrack. The goal of this project is to create an user-friendly tracking analysis tool able to account for multiple states of various types of motions and complex transitions between them. More precisely, this tool enable to account for immobile, diffusive, directed and confined motion and for transitions between these types of motion. This tool enables scientists to analyse their samples by characterizing the different types of motion and the transition kinetics, as well as labeling their tracks with state probabilities.
 
-# Testing versions
-
-Branch created to test ExaTrack_while_segment.py and ExaTrack_while_segment_infer_vars.py. Both versions possess the function build_segment_model that builds a model that segments tracks across batches (stateful model). ExaTrack_while_segment_infer_vars.py also possess a function to infer the hidden states of the model.
-
-# Experimental Datasets
-## PBP2
-PBP2 dataset is too big to upload on GitHub (400MB). I can share it on demand.
-## Kinesin
-I uploaded a few of the movies I used. This requires to re-select one or a few tracks with clear stepping behavior. 
-
-
 # Installation with anaconda
 ## To run ExaTrack on CPU with anaconda and spyder IDE:
 
@@ -42,6 +31,17 @@ Right click on the box ´code´ and ´download ZIP´. Unzip the package are the 
 **WARNING**: On my hands, jit compilation fails with GPU computing. If using GPU parallelization, make sure to set `jit_compile=False` in the exatrack.py file.
 
 You can then open spyder from the anaconda-navigator GUI or with the command line `spyder`
+
+# Testing versions
+
+Branch created to test ExaTrack_while_segment.py and ExaTrack_while_segment_infer_vars.py. Both versions possess the function build_segment_model that builds a model that segments tracks across batches (stateful model). ExaTrack_while_segment_infer_vars.py also possess a function to infer the hidden states of the model.
+The script test_exatrack_while_segment_infer_vars.py enables to test the main features of ExaTrack (stateful model fitting + variable inference).
+
+# Experimental Datasets
+## PBP2
+PBP2 dataset is too big to upload on GitHub (400MB). I can share it on demand.
+## Kinesin
+I uploaded a few of the movies I used. This requires to re-select one or a few tracks with clear stepping behavior. 
 
 
 # License
