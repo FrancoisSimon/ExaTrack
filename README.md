@@ -35,7 +35,9 @@ You can then open spyder from the anaconda-navigator GUI or with the command lin
 # Testing versions
 
 Branch created to test ExaTrack_while_segment.py and ExaTrack_while_segment_infer_vars.py. Both versions possess the function build_segment_model that builds a model that segments tracks across batches (stateful model). ExaTrack_while_segment_infer_vars.py also possess a function to infer the hidden states of the model.
-The script test_exatrack_while_segment_infer_vars.py enables to test the main features of ExaTrack (stateful model fitting + variable inference).
+
+# Getting started
+The script test_exatrack_while_segment_infer_vars.py enables to test the main features of ExaTrack (stateful model fitting + variable inference). This script will provide a good basis to get started with ExaTrack.
 
 # Experimental Datasets
 ## PBP2
