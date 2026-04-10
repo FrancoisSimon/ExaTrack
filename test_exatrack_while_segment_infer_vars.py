@@ -13,7 +13,8 @@ import random
 
 # Import the ExaTrack module (ensure exatrack.py is in your path)
 import sys
-sys.path.append(r"C:\Users\Franc\Downloads\ExaTrack-Inference\ExaTrack-Inference") # add exatrack directory to the system path
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import exatrack_while_segment_infer_vars as exatrack
 #import exatrack as exatrack
 from glob import glob
@@ -66,7 +67,7 @@ initial_params = np.array([[np.log(1.0)]]*nb_states, dtype='float64')
 initial_fractions = np.array([[0]*nb_states+[-5.0]], dtype='float64')
 
 # Transition matrices
-    
+
 # Transition matrices
 transition_rates = 4 * np.eye(nb_states, dtype='float64')
 transition_rates[0,0] = 5
@@ -85,7 +86,7 @@ vary_initial_params = True
 vary_initial_fractions = True
 vary_transition_shapes = False
 
-# We prevent transitions between the two bound states to improve readability 
+# We prevent transitions between the two bound states to improve readability
 vary_transition_rates = np.ones(transition_rates.shape)
 #vary_transition_rates[:2, :2] = 0
 tf.math.softmax(transition_rates)
@@ -99,13 +100,13 @@ sequence_length = 10
 max_linking_distance = 1
 segment_length = 10
 
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks 
+model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params, # recurrent parameters of the model
                 initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
+                initial_fractions,
                 batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
@@ -180,7 +181,7 @@ print('***')
 '''
 State predictions:
 As of now, the segmentation model (also called stateful model) does not enable state
-predictions. We could improve the code so it does the prediction but I pefered to 
+predictions. We could improve the code so it does the prediction but I pefered to
 just load a classic model and perform the state predictions with that model.
 '''
 weights = model.get_weights()
@@ -189,13 +190,13 @@ track_array = tracks
 masks = all_masks
 track_array = tf.constant(track_array[:,None, :, None, None, :nb_dims], dtype = 'float64')
 #track_array.shape
-_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks 
+_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params = weights[0], # recurrent parameters of the model
                 initial_params = weights[1], # initial parameters of the model
                 transition_rates = weights[7], # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes = weights[8], # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions = weights[2], 
+                initial_fractions = weights[2],
                 batch_size = batch_size, # number of tracks analysed at the same time
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
