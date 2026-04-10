@@ -24,14 +24,20 @@ dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
 
+pu = 0.02
+pb = 0.1
+Ds = np.array([0.0, 0.25])
+ds = (2*Ds*dt)**0.5
+velocity = 0.005
+
 tracks, all_states, all_masks = exatrack.anomalous_diff_transition(
     max_track_len=track_len,
     nb_tracks=nb_tracks,
     LocErr=0.02,
     Fs=np.array([0.4, 0.6])  ,
-    Ds=np.array([0.0, 0.25]) ,
+    Ds=Ds,
     nb_dims=nb_dims,
-    velocities=np.array([0.005, 0.0]),      # No directed motion
+    velocities=np.array([velocity, 0.0]),      # No directed motion
     angular_Ds=np.array([0.0, 0.0]),      # No rotational diffusion
     conf_forces=np.array([0.0, 0.0]),
     conf_Ds=np.array([0.0, 0.0]),         # No diffusion of confinement center
@@ -144,6 +150,32 @@ print(likelihood)
 
 with tf.device(device):
     history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
+
+parameters = exatrack.get_model_params(model, track_segmentation = True)
+
+'''
+exatrack.equilibrium_distribution enables to compute the expected equilibrium distribution
+assuming shape parameters fixed at 1. A more general function is required for Gamma-distributed lifetimes
+'''
+estimated_fractions = list(exatrack.equilibrium_distribution(parameters['transition rates']))
+True_fractions = [pb/(pu+pb), pu/(pu+pb)]
+print('***')
+print('True fractions:', True_fractions)
+print('Estimated fractions:', estimated_fractions)
+print('***')
+print('True diffusion length:', parameters['d'])
+print('Estimated diffusion length:', ds)
+print('***')
+print('True velocity of state 0:', velocity)
+print('Estimated velocity of state 0:', parameters['anomalous factors'][0])
+print('***')
+print('True binding rate:', pb)
+print('Estimated binding rate:', parameters['transition rates'][1,0])
+print('***')
+print('True binding rate:', pu)
+print('Estimated unbinding rate:', parameters['transition rates'][0,1])
+print('***')
+
 
 '''
 State predictions:
