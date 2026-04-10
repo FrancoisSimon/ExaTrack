@@ -5,22 +5,6 @@ Created on Fri Mar 27 13:48:22 2026
 @author: Franc
 """
 
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Mar 16 11:46:29 2026
-
-@author: Franc
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Mar  4 15:34:05 2026
-
-@author: Franc
-
-This script is derived from exatrack_alternate.py to allow the user to fix parameters.
-"""
-
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import RNN
@@ -176,8 +160,13 @@ def anomalous_diff_transition(max_track_len=100,
         states = np.array(states)[::nb_sub_steps]
         
         all_tracks[k,:track_len] = track
+        all_tracks[k,track_len:] = track[-1]
+
         all_states[k,:track_len] = states
-        all_masks[k,:track_len] = 1
+        all_states[k,track_len:] = states[-1]
+
+        all_masks[k,:track_len-1] = 1
+        all_masks[k,-1] = 1
         
     return all_tracks, all_states, all_masks
 
@@ -358,10 +347,13 @@ def padding(track_list, frame_list = None, batch_size = None):
         if track.shape[0]>=start_len:
             cur_len = track.shape[0]
             padded_tracks[i, :cur_len] = track
+            padded_tracks[i, cur_len:] = track[-1] # padding that replicates the edges in case we want to use ExaTrack on the reversed tracks
+
             mask[i, :cur_len] = 1
             if type(frame_list)!= type(None):
                 frames = frame_list[i]
                 padded_frames[i, :cur_len] = frames
+                padded_frames[i, cur_len:] = frames[-1]
         else:
             raise Warning('The minimal track length supported is 2 time points. Tracks of 1 time point were discarded.')
     
@@ -1440,6 +1432,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         
         return Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_states, All_coefs, All_biases, All_LPs, states
 
+
 def marginalise_variable(All_coefs, All_biases, integrate_index):
     """
     coefs = All_coefs[..., ::-1, :]
@@ -1447,7 +1440,7 @@ def marginalise_variable(All_coefs, All_biases, integrate_index):
     Given nb_gaussians=2 Gaussians characterised by coefficients and biases,
     integrate (marginalise) over the hidden variable at `integrate_index`
     using the Gaussian-product substitution.
- 
+    
     Parameters
     ----------
     coefs : ndarray, shape (..., 2, 2)
@@ -1458,7 +1451,7 @@ def marginalise_variable(All_coefs, All_biases, integrate_index):
         spatial dimension d.
     integrate_index : int  (0 or 1)
         Index of the hidden variable to integrate out.
- 
+    
     Returns
     -------
     remaining_coef : ndarray, shape (...)
@@ -1466,7 +1459,7 @@ def marginalise_variable(All_coefs, All_biases, integrate_index):
         Gaussian.
     remaining_bias : ndarray, shape (..., D)
         Bias of the marginal Gaussian.
- 
+    
     The marginal distribution of the remaining variable x_k is:
         P(x_k) ∝ exp(−½ (remaining_coef · x_k + remaining_bias)²)
     so that  x_k_MAP = −remaining_bias / remaining_coef
@@ -1504,33 +1497,133 @@ def marginalise_variable(All_coefs, All_biases, integrate_index):
 
     return coefs3, biases3, coefs4, biases4, LogConstant
 
-def extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims):
+def extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims, sequence_length):
+    '''
+    Algorithm to estimate the distribution of the hidden variables at a given time step
+    given the prior positions (online estimate, equivalent to filtering in the context 
+    of Kalman filters). 
+    '''
     All_coefs = np.array(All_coefs)
     All_biases = np.array(All_biases)
     All_LPs = np.array(All_LPs)
+    nb_tracks, track_len, nb_sequences = All_LPs.shape
+    nb_states = nb_sequences//sequence_length
     
     integrate_index = 0
     coefs3, biases3, coefs4, biases4, LogConstant = marginalise_variable(All_coefs, All_biases, integrate_index)
     
     All_LPs_ano = All_LPs + LogConstant -nb_dims * np.log(np.abs(coefs4[..., integrate_index]) + 1e-30)
-    ano_MAP = -biases3/coefs3[:,:,:, 1:]
-    ano_var = 1/(coefs3[..., 1:]**2 + 1e-30)
+    All_LPs_ano = All_LPs_ano.reshape((nb_tracks, track_len, sequence_length, nb_states)) 
+    ano_MAP = -biases3/coefs3[:, :, :, 1:]
+    ano_MAP = ano_MAP.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
+    '''
+    ano_MAP.shape
+    ano_MAP[3, 50, 0]
+    reshaped_coefs3 = coefs3[:, :, :, 1:].reshape((nb_tracks, track_len, nb_states, sequence_length))
+    reshaped_coefs3.shape
+    reshaped_coefs3[3, :, 0]
+    ano_MAP[3, 50, :,:,0]
+    coefs3[3, 50]
+    coefs3.shape
+    [3, :, -6, 1:]
+    reshaped_coefs3[3, 50, 0]
+    All_LPs_ano[3, 50]
+    np.arange(30).reshape((10, 3))[:, 0]
+    '''
+    ano_var = 1/(coefs3[..., 1:]**2 + 1e-50)
+    ano_var = ano_var.reshape((nb_tracks, track_len, sequence_length, nb_states, 1))
     w_ano = scipy_softmax(All_LPs_ano, axis=2)[..., None]  # (..., 1)
-    anomalous_mean = np.sum(ano_MAP * w_ano, axis=2)  # (tracks, T, D)
-    anomalous_var = np.sum(ano_var * w_ano, axis = 2)  + np.sum((ano_var - anomalous_mean[:, :, None, :]**2) * w_ano, axis=2)
-    anomalous_std = np.sqrt(anomalous_var)
-    ano_var.shape
-    anomalous_mean.shape
+    weighted_ano_MAP = ano_MAP * w_ano
+    anomalous_mean = np.sum(weighted_ano_MAP, axis=2)  # (tracks, time, nb states, nb dims)
+    weighted_ano_var_term1 = (ano_var + ano_MAP**2) * w_ano
+    weighted_ano_var_term2 = ano_MAP * w_ano
+    anomalous_var = np.sum(weighted_ano_var_term1, axis = 2) - np.sum(weighted_ano_var_term2, axis=2)**2
+    anomalous_std = anomalous_var**0.5
+    anomalous_mean[3,:,:,0]
+    anomalous_std[3,:,:,0]
+    anomalous_std.shape
+    
     integrate_index = 1
     #coefs3, biases3, coefs4, biases4, LogConstant = marginalise_variable(All_coefs, All_biases, integrate_index)
     All_LPs_pos = All_LPs - nb_dims * np.log(np.abs(All_coefs[..., integrate_index, integrate_index]) + 1e-30)
+    All_LPs_pos = All_LPs_pos.reshape((nb_tracks, track_len, sequence_length, nb_states)) 
     pos_MAP = - All_biases[..., 0, :]/All_coefs[..., 0, :1]
-    pos_var = 1/(All_coefs[..., 0, :1]**2 + 1e-30)
+    pos_MAP = pos_MAP.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
+    pos_var = 1/(All_coefs[..., 0, :1]**2 + 1e-50)
+    pos_var = pos_var.reshape((nb_tracks, track_len, sequence_length, nb_states, 1))
+    
     w_pos = scipy_softmax(All_LPs_pos, axis=2)[..., None]  # (..., 1)
-    pos_mean = np.sum(pos_MAP * w_pos, axis=2)  # (tracks, T, D)
+    weighted_pos_MAP = pos_MAP * w_pos
+    pos_mean = np.sum(weighted_pos_MAP, axis=2)  # (tracks, T, D)
+    weighted_pos_var_term1 = (pos_var + pos_MAP**2) * w_pos
+    weighted_pos_var_term2 = pos_MAP * w_pos
+    position_var = np.sum(weighted_pos_var_term1, axis = 2) - np.sum(weighted_pos_var_term2, axis=2)**2
+    position_std = position_var**0.5
     
     # Estimate the mixture variance = E[Var] + Var[E]
-    return pos_mean, anomalous_mean
+    return pos_mean, anomalous_mean, position_std, anomalous_std
+
+def extract_smooth_hidden_variables(tracks, masks, pred_model, batch_size, sequence_length, motion_types):
+    '''
+    Sloppy estimate of the hidden variables given all the known positions. While
+    the proper way to do it is to integrate over all the hidden variables (very
+    feasible but a little complex), we do that by running pred_model.predict on
+    both the track and the inverse track and averaging the estimates resulting
+    from extract_hidden_variables
+    the filtering 
+    smoothing by running the filterings on both ends
+    
+    motion_types: list of booleans with nb_states elements, the element i is 1
+    if the state i is directed or 0 if the state i is confined.
+    '''
+    motion_types = np.array(motion_types)
+    nb_dims = tracks.shape[-1]
+    preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict((tracks, masks), batch_size = batch_size)
+    
+    # transpose the shape and rate matrices for the hidden state inference on the reversed tracks
+    pred_model.weights[4].assign(tf.transpose(pred_model.weights[4]))
+    pred_model.weights[5].assign(tf.transpose(pred_model.weights[5]))
+    
+    preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict((tracks[:,:, ::-1], masks[:,::-1]), batch_size = batch_size)
+    pos_mean_1, anomalous_mean_1, position_std_1, anomalous_std_1 = extract_hidden_variables(All_coefs_1, All_biases_1, All_LPs_1, nb_dims, sequence_length)
+    pos_mean_2, anomalous_mean_2, position_std_2, anomalous_std_2 = extract_hidden_variables(All_coefs_2, All_biases_2, All_LPs_2, nb_dims, sequence_length)
+    
+    pos_mean_1 = pos_mean_1[:, 1:]
+    position_std_1 = position_std_1[:, 1:]
+    pos_mean_2 = pos_mean_2[:, :0:-1]
+    position_std_2 = position_std_2[:, :0:-1]
+    
+    # In case the motion type is directed, we need to inverse the sign of anomalous parameter 
+    # of the reversed track as it represents the drift
+    motion_type_sign = -1*(motion_types==1) + 1*(motion_types==0)
+    motion_type_sign = motion_type_sign[None,None,:,None]
+    
+    anomalous_mean_1 = anomalous_mean_1[:, 1:]
+    anomalous_std_1 = anomalous_std_1[:, 1:]
+    anomalous_mean_2 = motion_type_sign * anomalous_mean_2[:, :0:-1]
+    anomalous_std_2 = anomalous_std_2[:, :0:-1]
+    
+    def optimal_estimator(x1, x2, var1, var2):
+        w1 = 1 / var1
+        w2 = 1 / var2
+        return (w1 * x1 + w2 * x2) / (w1 + w2)
+    
+    pos_mean = optimal_estimator(pos_mean_1, pos_mean_2, position_std_1**2, position_std_2**2)
+    pos_std = (1/((1 / position_std_1**2 + 1 / position_std_2**2)))**0.5
+    
+    anomalous_mean = optimal_estimator(anomalous_mean_1, anomalous_mean_2, anomalous_std_1**2, anomalous_std_2**2)
+    anomalous_std = (1/((1 / anomalous_std_1**2 + 1 / anomalous_std_2**2)))**0.5
+    
+    mean_preds = (preds_1 + preds_2[:,::-1])/2
+    
+    # We can average the position along the state axis as the state has a small influence on the estimated position
+    w = mean_preds[:,1:-1,:, None]
+    position_mean = np.sum(w * pos_mean, axis = 2)
+    position_var = np.sum((pos_std**2 + pos_mean**2) * w, axis = 2) - np.sum(pos_mean * w, axis=2)**2
+    position_std = position_var**0.5
+    
+    # The anomalous variable cannot be averaged along the state axis to avoid mixing velocity vector and potential well position which have different orders of magnitude
+    return position_mean, position_std, anomalous_mean, anomalous_std, mean_preds
 
 class Final_layer(tf.keras.layers.Layer):
     def __init__(self, sequence_phase_1, nb_dims, sequence_length, **kwargs):
@@ -2279,11 +2372,14 @@ def get_model_params(model, track_segmentation = False):
     else:
         shape_IDs = 5
         rates_IDs = 4    
-    transition_shapes = tf.math.exp(weights[shape_IDs])
+    transition_shapes = tf.math.exp(weights[shape_IDs]).numpy()
     transition_rates = tf.math.softmax(weights[rates_IDs], axis = 1)*transition_shapes
+    transition_rates = transition_rates.numpy()
     model_types = weights[0][:, -1].numpy().astype(int)
     model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-    param_dict = {'Model types': model_types_str, 'anomalous factors': tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4], 'Localization errors': np.exp(weights[0][:, 0]), 'd': np.exp(weights[0][:, 1]), 'q': np.exp(weights[0][:, 3]), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': tf.math.softmax(weights[2][0])}
+    anomalous_factors = tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4]
+    anomalous_factors = anomalous_factors.numpy()
+    param_dict = {'Model types': model_types_str, 'anomalous factors': anomalous_factors, 'Localization errors': np.exp(weights[0][:, 0]), 'd': np.exp(weights[0][:, 1]), 'q': np.exp(weights[0][:, 3]), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': tf.math.softmax(weights[2][0])}
     return param_dict
 
 def equilibrium_distribution(P):
