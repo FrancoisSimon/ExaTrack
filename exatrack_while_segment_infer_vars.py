@@ -2497,7 +2497,7 @@ def segment_tracks(track_list, batch_size, segment_length=20, min_segment_length
         cutoff_batch_treshhold = 0.5/batch_size
         
     max_track_length = np.max([len(track) for track in track_list])
-    max_nb_batches = (len(track_list) // batch_size + 1) * (max_track_length // segment_length + 1)
+    max_nb_batches = (len(track_list) // batch_size + 1) * (max_track_length // segment_length + 1)*2
     track_batches = np.zeros((max_nb_batches, batch_size, segment_length, track_list[0].shape[1]))
     mask_batches = np.zeros((max_nb_batches, batch_size, segment_length))
     isfirst_batches = np.zeros((max_nb_batches, batch_size))
