@@ -56,7 +56,7 @@ for i in range(nb_rows):
 plt.gca().set_aspect('equal', adjustable='box')
 
 # Must identify a few directed tracks with stepping motion from the above plot before proceeding to the next steps
-IDs = [0,1,2]
+IDs = [ 466, 310, 161]
 
 tracks = [tracks[i] for i in IDs]
 len(tracks)
