@@ -26,7 +26,7 @@ from glob import glob
 import random
 
 # TODO: Update this path to point to your Kinesin_minflux data directory
-data_dir = r'C:\Users\Franc\Data\Kinesin_minflux\Tracks'
+data_dir = rootdir + '/Kinesin/Tracks'
 paths = glob(os.path.join(data_dir, '*Minflux_642_L75_pho100_lp15_BGdis40k_hex3_dt300us_cfr09_dp1*'))
 
 tracks, frames, track_IDs, opt_metrics = exatrack.read_table(paths[:], # path of the file to read or list of paths to read multiple files.
@@ -62,7 +62,7 @@ for i in range(nb_rows):
 plt.gca().set_aspect('equal', adjustable='box')
 
 # Must identify a few directed tracks with stepping motion from the above plot before proceeding to the next steps
-IDs = [0,1,2]
+IDs = [ 466, 310, 161]
 
 tracks = [tracks[i] for i in IDs]
 len(tracks)
@@ -204,14 +204,14 @@ _, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of t
                 vary_transition_shapes = vary_transition_shapes,
                 vary_transition_rates = vary_transition_rates)
 
-preds = pred_model.predict((track_array, masks), batch_size = batch_size)
+preds, All_coefs, All_biases, All_LPs = pred_model.predict((track_array, masks), batch_size = batch_size)
 
+preds.shape
 colors = np.array([[1,0,0],
                    [0,0,1]])
 
-
 plt.figure(figsize = (20, 20))
-lim = 0.05 # MreB
+lim = 0.1 # MreB
 nb_rows = 2
 IDs = random.sample(list(np.arange(len(tracks))), min(nb_rows**2, len(tracks)))
 for i in range(nb_rows):
@@ -229,29 +229,9 @@ for i in range(nb_rows):
 plt.gca().set_aspect('equal', adjustable='box')
 
 # Then we change version to infer the real positions and the velocity vectors (we could have used this new version from the beginning)
-import exatrack_while_segment_infer_vars as exatrack
 
-_, pred_model = exatrack.build_model(track_array.shape[2], # maximum number of time points in the input tracks
-                nb_states, # Number of states of their model
-                params = weights[0], # recurrent parameters of the model
-                initial_params = weights[1], # initial parameters of the model
-                transition_rates = weights[7], # transition rates for each pair of states (gamma distributed transition lifetimes)
-                transition_shapes = weights[8], # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions = weights[2],
-                batch_size = batch_size, # number of tracks analysed at the same time
-                nb_dims = nb_dims, # Number of dimensions of the tracks
-                sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
-                max_linking_distance = max_linking_distance, # Maximum linking distance or standard deviation for the expected misslinking distance.
-                estimated_density = estimated_density, # Estimated density of the sample.
-                vary_params = vary_params,
-                vary_initial_params = vary_initial_params,
-                vary_initial_fractions = vary_initial_fractions,
-                vary_transition_shapes = vary_transition_shapes,
-                vary_transition_rates = vary_transition_rates)
-
-preds, All_coefs, All_biases, All_LPs = pred_model.predict((track_array, masks), batch_size = batch_size)
-
-pos_mean, anomalous_mean = exatrack.extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims = 2)
+pos_mean, anomalous_mean, position_std, anomalous_std = exatrack.extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims = 2, sequence_length = sequence_length)
+pos_mean.shape
 
 def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, nb_states=3, dt=1):
     if colors is None:
@@ -260,8 +240,9 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     #ID = random.randint(0, len(tracks) - 1)
     mask = masks[ID].astype(bool)
     track = tracks[ID]
+    
     p = preds[ID, mask][:, :-1]
-
+    
     refined = pos_mean[ID][mask[1:]]
     p_refined = preds[ID, mask][1:, :-1]
     anomalous_vect = anomalous_mean[ID, mask[1:]]
@@ -284,6 +265,9 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     # 2) Refined track with state labels (same limits as raw)
     ax = axes[1]
     ax.plot(refined[:, 0], refined[:, 1], ':k', alpha=0.5)
+    
+    refined.shape
+    p_refined.shape
     ax.scatter(refined[:, 0], refined[:, 1], c=p_refined @ colors, s=15)
     ax.scatter(refined[0, 0], refined[0, 1], c='k', s=30, marker='x', zorder=5)
     ax.set_aspect('equal', adjustable='box')
@@ -292,14 +276,13 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
     ax.set_title('Refined track')
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-
+    
     # 3) Velocity vs time
     ax = axes[2]
     disp_raw = np.sqrt(np.sum(np.diff(track, axis=0)**2, axis=1)) / dt
     disp_refined = np.sqrt(np.sum(np.diff(refined, axis=0)**2, axis=1)) / dt
-    disp_ano = np.sqrt(np.sum(anomalous_vect**2, axis=1)) / dt
-    anomalous_mean.shape
-
+    disp_ano = np.sqrt(np.sum(anomalous_vect[:, 0]**2, axis=1)) / dt
+    
     t_raw = np.arange(len(disp_raw))
     t_refined = np.arange(len(disp_refined))
 
@@ -335,7 +318,6 @@ def plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, 
 
 for ID in range(len(tracks)):
     plot_track(ID, tracks, preds, pos_mean, anomalous_mean, masks, colors=None, nb_states=3, dt=1)
-
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -377,3 +359,4 @@ def plot_gamma_distribution(shape, scale=1.0):
     plt.show()
 
 plot_gamma_distribution(2, 1.305)
+plot_gamma_distribution(1.87, 0.58)

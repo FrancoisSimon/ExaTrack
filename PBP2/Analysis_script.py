@@ -19,7 +19,6 @@ try:
 except:
     # add the absolute path if you are running the script line by line
     rootdir = r"C:\Users\Franc\Data\GitHub\ExaTrack"
-    sys.path.append(rootdir) 
 sys.path.insert(0, rootdir)
 import exatrack_while_segment_infer_vars as exatrack
 #import exatrack as exatrack

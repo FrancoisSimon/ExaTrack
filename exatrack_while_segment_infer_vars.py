@@ -1538,18 +1538,15 @@ def extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims, sequence_l
     weighted_ano_var_term2 = ano_MAP * w_ano
     anomalous_var = np.sum(weighted_ano_var_term1, axis = 2) - np.sum(weighted_ano_var_term2, axis=2)**2
     anomalous_std = anomalous_var**0.5
-    anomalous_mean[3,:,:,0]
-    anomalous_std[3,:,:,0]
-    anomalous_std.shape
-    
+
     integrate_index = 1
     #coefs3, biases3, coefs4, biases4, LogConstant = marginalise_variable(All_coefs, All_biases, integrate_index)
     All_LPs_pos = All_LPs - nb_dims * np.log(np.abs(All_coefs[..., integrate_index, integrate_index]) + 1e-30)
-    All_LPs_pos = All_LPs_pos.reshape((nb_tracks, track_len, sequence_length, nb_states)) 
+    #All_LPs_pos = All_LPs_pos.reshape((nb_tracks, track_len, sequence_length, nb_states)) 
     pos_MAP = - All_biases[..., 0, :]/All_coefs[..., 0, :1]
-    pos_MAP = pos_MAP.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
+    #pos_MAP = pos_MAP.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
     pos_var = 1/(All_coefs[..., 0, :1]**2 + 1e-50)
-    pos_var = pos_var.reshape((nb_tracks, track_len, sequence_length, nb_states, 1))
+    #pos_var = pos_var.reshape((nb_tracks, track_len, sequence_length, nb_states, 1))
     
     w_pos = scipy_softmax(All_LPs_pos, axis=2)[..., None]  # (..., 1)
     weighted_pos_MAP = pos_MAP * w_pos
