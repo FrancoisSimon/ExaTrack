@@ -12,13 +12,13 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 
 # Import the ExaTrack module (ensure exatrack.py is in your path)
-import sys
 import os
+import sys
 try:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 except:
-    sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack dire
-import exatrack_while_segment_infer_vars as exatrack
+    sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack directory to the system path
+import exatrack_while_segment as exatrack
 from glob import glob
 import random
 
@@ -59,7 +59,7 @@ for i in range(nb_rows):
 plt.gca().set_aspect('equal', adjustable='box')
 
 # Must identify a few directed tracks with stepping motion from the above plot before proceeding to the next steps
-IDs = [ 466, 310, 161]
+IDs = [0,1,2]
 
 tracks = [tracks[i] for i in IDs]
 len(tracks)

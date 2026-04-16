@@ -14,7 +14,12 @@ from matplotlib import cm
 # Import the ExaTrack module (ensure exatrack.py is in your path)
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+# Import the ExaTrack module (ensure exatrack.py is in your path)
+import sys
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+except:
+    sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack directory to the system path
 import exatrack_while_segment as exatrack
 #import exatrack as exatrack
 from glob import glob
