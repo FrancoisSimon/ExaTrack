@@ -15,10 +15,13 @@ from matplotlib import cm
 import os
 import sys
 try:
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    rootdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 except:
-    sys.path.append(r"C:\Users\Franc\Data\ExaTrack") # add exatrack directory to the system path
-import exatrack_while_segment as exatrack
+    # add the absolute path if you are running the script line by line
+    rootdir = r"C:\Users\Franc\Data\GitHub\ExaTrack"
+    sys.path.append(rootdir) 
+sys.path.insert(0, rootdir)
+import exatrack_while_segment_infer_vars as exatrack
 from glob import glob
 import random
 
