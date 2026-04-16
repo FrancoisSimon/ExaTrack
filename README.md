@@ -17,6 +17,9 @@ While the main functionalities are already available, additions are to come with
 
 
 ## Running ExaTrack on GPU with anaconda and spyder IDE
+
+Right click on the box ´code´ and ´download ZIP´. Unzip the package are the desired location.
+
 `conda create -n PyExaTrack python=3.10.11`
 
 `conda activate PyExaTrack`
@@ -25,11 +28,24 @@ While the main functionalities are already available, additions are to come with
 
 `conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0`
 
-`pip install -r PATH\TO\requirements.txt`
+`pip install -r PATH\TO\ExaTrack\folder\requirements.txt`
 
 **WARNING**: On my hands, jit compilation fails with GPU computing. If using GPU parallelization, make sure to set `jit_compile=False` in the exatrack.py file.
 
 You can then open spyder from the anaconda-navigator GUI or with the command line `spyder`
+
+# Testing versions
+
+Branch created to test ExaTrack_while_segment.py and ExaTrack_while_segment_infer_vars.py. Both versions possess the function build_segment_model that builds a model that segments tracks across batches (stateful model). ExaTrack_while_segment_infer_vars.py also possess a function to infer the hidden states of the model.
+
+# Getting started
+The script test_exatrack_while_segment_infer_vars.py enables to test the main features of ExaTrack (stateful model fitting + variable inference). This script will provide a good basis to get started with ExaTrack.
+
+# Experimental Datasets
+## PBP2
+PBP2 dataset is too big to upload on GitHub (400MB). I can share it on demand.
+## Kinesin
+I uploaded a few of the movies I used. This requires to re-select one or a few tracks with clear stepping behavior. 
 
 
 # License
