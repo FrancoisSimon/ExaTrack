@@ -32,7 +32,7 @@ import exatrack_while_segment_infer_vars_locErr as exatrack
 from glob import glob
 
 track_len = 50
-nb_tracks = 500
+nb_tracks = 200
 reference_dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
@@ -145,8 +145,8 @@ nb_batches = len(seq)
 #all_masks = masks
 learning_rate = 0.01
 nb_batches
-epochs = 100
-epoch_decay = 80
+epochs = 40
+epoch_decay = 30
 decay_threshold = epoch_decay*nb_batches
 decay_rate = 0.005
 np.exp(-20*64*0.001)
