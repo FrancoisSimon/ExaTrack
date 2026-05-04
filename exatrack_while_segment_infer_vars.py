@@ -1197,6 +1197,7 @@ sequence_phase_2 = recurrent_sequence_phase_2
 density = 0.001
 inputs = sliced_inputs
 mask = sliced_mask
+isfirst = input_isfirst
 Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
 Prev_coefs.shape
 Prev_coefs[:,0,0]
@@ -2515,6 +2516,7 @@ def segment_tracks(track_list, batch_size, segment_length=20, min_segment_length
         for i in range(nb_segments):
             segment = track[i*(segment_length-1):(i+1)*segment_length-i]
             track_batches[batch_ID + i, index_ID, :len(segment)] = segment
+            track_batches[batch_ID + i, index_ID, len(segment):] = segment[-1]
             mask_batches[batch_ID + i, index_ID, :len(segment)] = 1
             if i == 0:
                 isfirst_batches[batch_ID, index_ID] = 1 
@@ -2664,14 +2666,12 @@ def build_segment_model(track_len, # maximum number of time points in the input 
         min_segment_length=4,
         cutoff_batch_treshhold=0.5,
     )
+    
     all_inputs, outputs = seq[0]
     inputs = all_inputs[0]
     input_mask = tf.constant(all_inputs[1], dtype = dtype)
     input_isfirst = tf.constant(all_inputs[2], dtype = dtype)
     
-    inputs = tracks
-    input_mask = masks
-    input_isfirst = masks[:, 0]
     '''
     reshaped_inputs = tf.keras.layers.Lambda(lambda x: x[:, None, :, None, None, :], dtype = dtype)(inputs)
     transposed_inputs = transpose_layer(dtype = dtype)(reshaped_inputs, perm = [2, 1, 0, 3, 4, 5])
@@ -2702,6 +2702,10 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     isdir = Init_layer.param_vars[:, 4]
     
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
+
+    Prev_coefs[:,0,:6]
+    Prev_biases[:,0,:6]
+    Prev_biases[:,0,:]
     
     first_mask_layer = IsfirstMaskLayer(dtype = dtype)
     Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
@@ -2714,6 +2718,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, carryover = True, dtype = dtype)
     #self=layer
     Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_motion_states, All_coefs, All_biases, All_LPs, motion_states = layer(sliced_inputs, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir, isfirst = input_isfirst)
+    
     states = [Prev_coefs, Prev_biases, LP, All_motion_states, motion_states]
     carryover_layer = CarryoverAssignLayer(carryout_variables=[Init_layer.carryout_coefs,
                                                                Init_layer.carryout_biases,
