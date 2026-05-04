@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri May  1 11:20:12 2026
-
-@author: Franc
-"""
-
-# -*- coding: utf-8 -*-
-"""
 Created on Fri Mar 27 13:48:22 2026
 
 @author: Franc
@@ -680,7 +673,10 @@ def anomalous_diff_transition(max_track_len=100,
             dt_scale = dt_std ** 2 / dt
             dt_shape = dt / dt_scale
             dts = np.random.gamma(dt_shape, dt_scale, track_len)
+            #dts[:] = dts[0]
             dts[dts<0.05*dt] = 0.05*dt
+            dts[dts>3*dt] = 3*dt
+
         else:
             dts = np.full(track_len, dt)
 
@@ -1386,7 +1382,7 @@ def get_all_sequences(sequence_length, nb_states):
     all_sequences = all_sequences[:, ::-1]
     return all_sequences
 
-self =tf.keras.layers.Layer(dtype = dtype)
+# self =tf.keras.layers.Layer(dtype = dtype)
 class Initial_layer_constraints(tf.keras.layers.Layer):
     def __init__(
         self,
@@ -1913,12 +1909,13 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     # Continuous-discrete conversion for l:
     #   ld = 1 - exp(-lc)   <=>   lc = -log(1 - ld)
     # so l scales correctly with dt_ratio in the continuous domain.
-    d       = d_ref * dt_sqrt_ratio + 1e-20                  # (track_len, nb_tracks, nb_states)
-    q       = q_ref * dt_sqrt_ratio + 1e-20
+    d       = d_ref * dt_sqrt_ratio[:track_len] + 1e-20                  # (track_len, nb_tracks, nb_states)
+    q       = q_ref * dt_sqrt_ratio[:track_len] + 1e-20
     l_ref_c = -tf.math.log(1.0 - l_ref)
-    l_c     = l_ref_c * dt_ratio
-    l       =  tf.clip_by_value(- tf.math.expm1(-l_c), 1e-10, 0.99999999)#   = 1.0 - tf.math.exp(-l_c) + 1e-20 without underflow
-    v       = v_ref * dt_ratio + 1e-20
+    l_c     = l_ref_c * dt_ratio[:track_len]
+    l       =  - tf.math.expm1(-l_c) + 1e-20#   = 1.0 - tf.math.exp(-l_c) + 1e-20 without underflow
+    one_minus_l = tf.math.exp(-l_c) + 1e-20
+    v       = v_ref * dt_ratio[:track_len] + 1e-20
     
     # ------------------------------------------------------------------
     # NEW: per-step rescaling of the ano_t coefficient in recurrent g2.
@@ -1927,13 +1924,14 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     #     E[ano_{t+1} | ano_t] = (dts[t+1]/dts[t]) * ano_t.
     # For confined motion ano_t is the well anchor, dt-independent.
     # ------------------------------------------------------------------
-    dt_ratio_next         = tf.concat([dt_ratio[1:], dt_ratio[-1:]], axis=0)
-    ano_step_ratio        = dt_ratio_next / dt_ratio                    # (track_len, nb_tracks, 1)
-    ano_rescale_per_state = ano_step_ratio * isdir_mask + isconf_mask
+    dt_ratio_next         = dt_ratio[1:]
+    ano_step_ratio        = dt_ratio_next / dt_ratio[:-1]                    # (track_len, nb_tracks, 1)
+    ano_rescale_per_state = ano_step_ratio * isdir_mask + (1.0 - isdir_mask)
     # shape: (track_len, nb_tracks, nb_states)
     
     # Characteristic well distance for confined motion
-    well_distance = d / tf.sqrt(2.0 * l)    # (nb_tracks, nb_states) independent of time or localization error
+    #well_distance = d / tf.sqrt(1-tf.math.exp(-2*l_c))    # (nb_tracks, nb_states) independent of time or localization error
+    well_distance = d / tf.sqrt(2*(1-tf.math.exp(-2*l_c)))    # (nb_tracks, nb_states) independent of time or localization error
     
     # Initial position spread, broadcast to full (track_len, nb_tracks, nb_states)
     initial_position_spread = tf.broadcast_to(tf.exp(log_init_spread),
@@ -1959,8 +1957,16 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     # Gaussian 1 -- diffusion + anomalous drift
     #   confined :  [(1-l)/d, l/d, -1/d, 0]
     #   directed :  [   1/d, 1/d, -1/d, 0]
-    inv_d = 1.0 / d
-    g1_c0 = (1.0 - l * isconf_mask) * inv_d 
+    
+    #g1_std = d * isdir_mask + d*((1-tf.math.exp(-2*l))/l)**0.5 * isconf_mask
+    
+    #Var = D dt/lambda dt * (1-exp(-2 lambda dt))
+    #Var = d**2/2 lambda dt * (1-exp(-2 lambda dt))
+
+    g1_std = d * isdir_mask + d/(2*l_c)**0.5*(1-tf.math.exp(-2*l_c))**0.5 * isconf_mask
+    
+    inv_d = 1.0 / g1_std
+    g1_c0 = (one_minus_l * isconf_mask + isdir_mask) * inv_d 
     g1_c1 = (l * isconf_mask + isdir_mask) * inv_d + 1.1e-20
     g1    = tf.stack([g1_c0, g1_c1, -inv_d, zeros], axis=-1)
     
@@ -2023,10 +2029,10 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
          nb_tracks, nb_states, nb_dims), dtype=dtype)
     
     # Then, we compute the time and localization error varying scaling factors    
-    Log_factors = - tf.math.log(LocErr + 1e-20) - tf.math.log(d) - tf.math.log(q)
+    Log_factors = - tf.math.log(LocErr + 1e-20) - tf.math.log(g1_std) - tf.math.log(q)
         
     #initial_anomalous_factor = (- param_vars[:,1] + 0.5*tf.math.log(2*tf.math.sigmoid(param_vars[:,2])))*(1.-state_mask) - param_vars[:,2]*state_mask
-    initial_anomalous_factor = (- tf.math.log(d) + 0.5*tf.math.log(2*l+1e-20))*isconf_mask - tf.math.log(v)*isdir_mask
+    initial_anomalous_factor = (- tf.math.log(d) + 0.5*tf.math.log(2*(1-tf.math.exp(-2*l_c))+1e-20))*isconf_mask - tf.math.log(v)*isdir_mask
     initial_Log_factors = Log_factors[0] - log_init_spread + initial_anomalous_factor[0]
     
     transition_Log_factors = Log_factors + initial_anomalous_factor
@@ -2638,7 +2644,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         flat_trans_Log_seq  = flat_trans_Log_full[1:]
         transition_mean_seq = transition_mean_full[1:, :, :nb_states**2]
         transition_var_seq  = transition_var_full[1:,  :, :nb_states**2]
-        flat_Log_full[1,3]
+        
         # ------------------------------------------------------------------
         # Initial loop-carried state.  The first segments started at t = 0,
         # so we initialise gamma_dist_mean / _var from the rates at t = 0.
@@ -3084,7 +3090,7 @@ def get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_
     '''
     nb_dims = 1
     LocErrs = np.ones((1,1))
-    dts = np.ones((1,1))
+    dts = np.ones((1,2))
     hidden_var_coefs, _, _, _, initial_hidden_var_coefs, _, _, _,  transition_hidden_var_coefs, _, _, integration_variable_index, _, _, _ = constraint_function(params, initial_params, LocErrs, dts, nb_dims, 1., dtype)
     hidden_var_coefs = hidden_var_coefs[0]
     transition_hidden_var_coefs = transition_hidden_var_coefs[0]
@@ -3529,7 +3535,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     
     inputs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'tracks', dtype = dtype)
     input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'Localization errors', dtype = dtype)
-    input_dts = tf.keras.Input(batch_shape=(batch_size, track_len), name = 'frame durations', dtype = dtype)
+    input_dts = tf.keras.Input(batch_shape=(batch_size, track_len+1), name = 'frame durations', dtype = dtype)
     input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), name = 'masks', dtype = dtype)
     input_isfirst = tf.keras.Input(batch_shape = (batch_size,), name = 'isfirsts', dtype = dtype)
     '''
@@ -3540,7 +3546,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
         min_segment_length=4,
         cutoff_batch_treshhold=0.5)
     
-    all_inputs, outputs = seq[0]
+    all_inputs, outputs = seq[1]
     inputs = all_inputs[0]
     input_LocErrs = all_inputs[1]
     input_dts = all_inputs[2]
@@ -3584,16 +3590,6 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     isdir = Init_layer.param_vars[:, 4]
     
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
-    LP[19]
-    Prev_coefs[:, 19]
-    Prev_coefs[:, 20]
-    Log_factors[0,10:25]
-    
-    (LP - nb_dims * tf.math.log(
-        tf.math.abs(Prev_coefs[0, :, :, 0]
-                    * Prev_coefs[1, :, :, 1]) + 1e-20))[10:20]
-    
-    Prev_coefs[:, 19]
     
     first_mask_layer = IsfirstMaskLayer(dtype = dtype)
     Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
@@ -3627,8 +3623,9 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask, input_isfirst),
                            outputs=outputs, name="Diffusion_model")
     
+    #carried_Prev_coefs, carried_Prev_biases, carried_LP, carried_segment_len, carried_gamma_dist_mean, carried_gamma_dist_var = All_states
     pred_model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask, input_isfirst),
-                                outputs=(All_states, All_coefs, All_biases, All_LPs), name="Diffusion_model")
+                                outputs=(outputs, All_states, All_coefs, All_biases, All_LPs), name="Diffusion_model")
     
     '''
     model.compile(optimizer="adam", loss=MLE_loss)
@@ -3672,7 +3669,7 @@ def build_model(track_len, # maximum number of time points in the input tracks
 
     inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
     input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'Localization errors', dtype = dtype)
-    input_dts = tf.keras.Input(batch_shape=(batch_size, track_len), name = 'frame durations', dtype = dtype)
+    input_dts = tf.keras.Input(batch_shape=(batch_size, track_len+1), name = 'frame durations', dtype = dtype)
     input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), dtype = dtype)
     
     #inputs = tracks
@@ -3696,14 +3693,9 @@ def build_model(track_len, # maximum number of time points in the input tracks
                                            sequence_length = sequence_length,
                                            dtype = dtype)
     
-    self = Init_layer
     tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
     
     softmax_inv_Fractions = Init_layer.initial_fractions
-    log_ds = Init_layer.param_vars[:, 1]
-    anomalous_factors = Init_layer.param_vars[:, 2]
-    isdir = Init_layer.param_vars[:, 4]
-    
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
     
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
@@ -3907,7 +3899,7 @@ def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=
     track_batches = np.zeros((max_nb_batches, batch_size, segment_length, track_list[0].shape[1]))
     LocErr_batches = np.zeros((max_nb_batches, batch_size, segment_length, LocErr_list[0].shape[1]))
     mean_dt = np.mean(np.concatenate(dt_list))
-    dt_batches = np.zeros((max_nb_batches, batch_size, segment_length)) + mean_dt
+    dt_batches = np.zeros((max_nb_batches, batch_size, segment_length+1)) + mean_dt
     mask_batches = np.zeros((max_nb_batches, batch_size, segment_length))
     isfirst_batches = np.ones((max_nb_batches, batch_size))
     
@@ -3933,7 +3925,7 @@ def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=
             
             segment = track[i*(segment_length-1):(i+1)*segment_length-i]
             LocErr_segment = LocErrs[i*(segment_length-1):(i+1)*segment_length-i]
-            dt_segment = dts[i*(segment_length-1):(i+1)*segment_length-i]
+            dt_segment = dts[i*(segment_length-1):(i+1)*segment_length-i+1]
             track_batches[batch_ID + i, index_ID, :len(segment)] = segment
             track_batches[batch_ID + i, index_ID, len(segment):] = segment[-1]
             LocErr_batches[batch_ID + i, index_ID, :len(LocErr_segment)] = LocErr_segment
