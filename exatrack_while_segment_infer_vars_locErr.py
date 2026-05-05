@@ -73,7 +73,7 @@ def padding(track_list, LocErr_list = None, frame_list = None, batch_size = None
         nb_tracks = int(np.ceil(nb_tracks/batch_size))*batch_size
     padded_tracks = np.zeros((nb_tracks, max_len, track_list[0].shape[1]), dtype = track_list[0].dtype)
     if type(frame_list)!= type(None):
-        padded_frames =  np.zeros((nb_tracks, max_len), dtype = frame_list[0].dtype)
+        padded_frames =  np.zeros((nb_tracks, max_len+1), dtype = frame_list[0].dtype) # we need to have a frame array with one additional time step to compute the time step ratios in constraint_function
     else:
         padded_frames = None
     if type(LocErr_list)!= type(None):
@@ -105,7 +105,6 @@ def padding(track_list, LocErr_list = None, frame_list = None, batch_size = None
     return padded_tracks, padded_LocErrs, padded_frames, mask
 
 
-
 def _sample_transitions(state, current_sub_idx, cum_sub_times,
                         shape_matrix, transition_matrix, nb_states, dt_mean):
     """
@@ -133,28 +132,28 @@ def _sample_transitions(state, current_sub_idx, cum_sub_times,
             transitions[target] = max(1, end_idx - current_sub_idx)
     return transitions
 
-def anomalous_diff_transition(max_track_len=100,
-                              nb_tracks=100,
-                              LocErr=0.02,
-                              Fs=np.array([0., 1]),
-                              Ds=np.array([0.0, 0.25]),
-                              nb_dims=2,
-                              velocities=np.array([0.03, 0.0]),
-                              angular_Ds=np.array([0.0, 0.0]),
-                              conf_forces=np.array([0.0, 0.2]),
-                              conf_Ds=np.array([0.0, 0.0]),
-                              conf_dists=np.array([0.0, 0.0]),
-                              transition_matrix=np.array([[0.00, 0.1],
-                                                          [0.1, 0.00]]),
-                              shape_matrix=np.array([[0, 1],
-                                                     [1, 0]]),
-                              bleaching_rate=1e-10,
-                              LocErr_std=0.002,
-                              dt=0.02,
-                              dt_std=0.002,
-                              field_of_view=np.array([10, 10]),
-                              nb_burning_steps=100,
-                              nb_sub_steps=10):
+def anomalous_diff_transition(max_track_len=100,                          # Maximal track length
+                              nb_tracks=100,                              # Number of tracks
+                              LocErr=0.02,                                # Localization error
+                              Fs=np.array([0., 1]),                       # Initial fractions of each state
+                              Ds=np.array([0.0, 0.25]),                   # Diffusion coefficients
+                              nb_dims=2,                                  # number of dimensions (x, y, ..)
+                              velocities=np.array([0.03, 0.0]),           # Speed of the directed motion
+                              angular_Ds=np.array([0.0, 0.0]),            # Angular diffusion coefficient of the directed velocity vector 
+                              conf_forces=np.array([0.0, 0.2]),           # Force of the attraction towards the potential well (in between 0 for no confinement and 1 for purely confined particles)
+                              conf_Ds=np.array([0.0, 0.0]),               # Diffusion coefficient of the potential well (for confined motion)
+                              conf_dists=np.array([0.0, 0.0]),            # Standard deviation of the potential well when confinement appears 
+                              transition_matrix=np.array([[0.00, 0.1],    # Matrix of the rates for the transition model
+                                                          [0.1, 0.00]]),  
+                              shape_matrix=np.array([[0, 1],              # Matrix of the shapes for the transition model
+                                                     [1, 0]]),             
+                              bleaching_rate=1e-10,                       # Bleaching rate per time step
+                              LocErr_std=0.002,                           # Standard deviation of the localization error, can be set to 0 for constant localization error
+                              dt=0.02,                                    # Time step
+                              dt_std=0.002,                               # Standard deviation of the time steps, can be set to 0 for constant time steps
+                              field_of_view=np.array([10, 10]),           # Size of the field of view
+                              nb_burning_steps=100,                       # Number of steps used before actually simulating the tracks to better simulate lifetimes and equilibrium fractions
+                              nb_sub_steps=10):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
 
     nb_states = len(velocities)
     if not np.all(np.array([len(Fs), len(Ds), len(velocities), len(angular_Ds),
@@ -617,8 +616,8 @@ def correct_state_predictions_padding(state_preds, all_masks, sequence_length):
 def RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2, next_hidden_var_coefs_1, next_hidden_var_coefs_2, biases_1, biases_2, coef_index, nb_dims = 1):
     '''
     Basic function of the method to simplify a product of two Gaussians that both depend on
-    a hidden variable of index `coef_index` into one gaussian that depend on this variable
-    and one Gaussian that is independent of this variable. 
+    a hidden variable of index `coef_index` into one gaussian that depends on this variable
+    and another Gaussian that is independent of this variable. 
     Here, the 2 Gaussians that depend on a linear combination of hidden variables are characterized
     by the coefficients associated with each hidden variables in the linear combination and a
     biais vector.
@@ -693,13 +692,8 @@ def RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2,
     LogConstant = -nb_dims*tf.math.log(tf.math.abs(C1*C2*std4*std3))[:,:,0]
     return LogConstant, current_coefs3, current_coefs4, next_coefs3, next_coefs4, biases3, biases4
 
-'''
-current_hidden_var_coefs = current_hidden_var_coefs_cp
-next_hidden_var_coefs = next_hidden_var_coefs_cp
-biases = biases_cp
-kept_next_hidden_var_coefs = kept_next_hidden_var_coefs_cp
-kept_biases = kept_biases_cp
-'''
+#%% Functions that need to be executed during the different steps of the automated integration process
+
 @tf.function(jit_compile=jit_compile)
 def intermediate_RNN_function(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims):
     
@@ -799,6 +793,7 @@ def no_RNN_function_phase_2(next_hidden_var_coefs, current_hidden_var_coefs, bia
     biases_cp = tf.cast(tf.reshape(tf.stack(biases_cp), [len(biases_cp)]+biases.shape[1:]), dtype = dtype) # we need to explicitely assign the biase shape to avoid issues in `new_LCs = tf.reduce_sum(norm_log_gaussian(tf.cast(tf.stack(biases_cp), dtype = dtype)), axis = 3)` at the final step when the biase tensor is empty
     
     return tf.stack(next_hidden_var_coefs_cp), current_hidden_var_coefs, biases_cp, LC, nb_gaussians, tf.stack(kept_next_hidden_var_coefs_cp), tf.stack(kept_biases_cp)
+#%% Functions that need to be executed during the different steps of the automated integration process
 
 
 @tf.function(jit_compile=jit_compile)
@@ -810,9 +805,18 @@ def RNN_reccurence_formula(current_hidden_var_coefs, # coefficients of the hidde
                            nb_dims,
                            dtype = 'float64'): # False by default, set to true when aiming to compute the scaling factor
     '''
-    We first integrate over the current hidden variables. To do so, we use RNN_gaussian_product
-    to reduce the number of gaussians that depend on the current hidden variable to 1. Once this
-    is done, we can simply remove the last gaussian.
+    RNN_reccurence_formula is the function that organizes and executes the different
+    steps of the automated integration process. 
+    
+    We first integrate over the current hidden variables. During the phase 1, we 
+    perform Gaussian swaps to express the joint probability so a single Gaussian
+    depends on the variable to be integrated over. This last Gaussian is then eliminated
+    as the integrale of a single gaussian equals 1. This is repeated for all the 
+    hidden variables of the current step to retreive the Gaussians that reprensent
+    the posterior on the hidden variables (next_hidden_var_coefs, biases, LP).
+    
+    The phase 2 is then applied to reorder the remaining Gaussians (posterior) so the coefficients
+    have the same patterns than the prior gaussians.
     '''
     
     current_hidden_var_coefs_cp = tf.identity(current_hidden_var_coefs)
@@ -832,7 +836,7 @@ def RNN_reccurence_formula(current_hidden_var_coefs, # coefficients of the hidde
         
         coef_index, ID_1, ID_2 = s
         current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp, nb_dims)
-
+        
     '''
     Once the integration is done, all the current_hidden_var_coefs_cp are 0 and we 
     have nb_gaussians - nb_hidden_variables variables left. If that number is higher than 
@@ -863,9 +867,9 @@ def transition_RNN_reccurence_formula(current_hidden_var_coefs, # coefficients o
                            nb_dims,
                            dtype = 'float64'): # False by default, set to true when aiming to compute the scaling factor
     '''
-    We first integrate over the current hidden variables. To do so, we use RNN_gaussian_product
-    to reduce the number of gaussians that depend on the current hidden variable to 1. Once this
-    is done, we can simply remove the last gaussian.
+    Addaptation of RNN_reccurence_formula in case of transitions between states i to j with i!=j
+    This additional step is required to integrate over the previous hidden variable that 
+    disappears during transitions
     '''
     current_hidden_var_coefs_cp = tf.identity(current_hidden_var_coefs)
     next_hidden_var_coefs_cp = tf.identity(next_hidden_var_coefs)
@@ -883,28 +887,82 @@ def transition_RNN_reccurence_formula(current_hidden_var_coefs, # coefficients o
         print('1...')
         coef_index, ID_1, ID_2 = s
         current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp, nb_dims)
-
+    
     Next_coefs = current_hidden_var_coefs_cp
     Next_biases = biases_cp
     
     return Next_coefs, Next_biases, LC
 
-def get_all_sequences(sequence_length, nb_states):
-    '''
-    produces a matrix of the possible sequences of states
-    '''
-    Bs_ID = np.arange(nb_states**sequence_length)
-    all_sequences = np.zeros((nb_states**sequence_length, sequence_length), int)
-    
-    for k in range(all_sequences.shape[1]):
-        cur_row = np.mod(Bs_ID,nb_states**(k+1))
-        Bs_ID = (Bs_ID - cur_row)
-        all_sequences[:,k] = cur_row//nb_states**k
-    all_sequences = all_sequences[:, ::-1]
-    return all_sequences
-
 # self =tf.keras.layers.Layer(dtype = dtype)
 class Initial_layer_constraints(tf.keras.layers.Layer):
+    '''
+    First layer of the model that initializes the parameters and variables
+
+    Responsibilities
+    ----------------
+    1. Owns and creates all trainable parameters of the dynamical model:
+         - `param_vars`           : per-state recurrence parameters
+                                    (log_LocErr, log_d, ano, log_q, is_directed_flag)
+         - `initial_param_vars`   : per-state initial-spread parameters
+         - `initial_fractions`    : softmax-parametrised initial state mix
+         - `max_linking_distance` : (non-trainable) mislinking radius
+       plus optional non-trainable carry-over buffers used when the model is
+       run in segmented mode (`carryover=True`).
+
+    2. On `call`, builds the full set of Gaussian coefficients/biases for
+       every time step by invoking `constraint_function`, appends an extra
+       "mislinking" state, performs the first recurrence step (t = 0) by
+       calling `RNN_reccurence_formula`, and returns the loop-carried tuple
+       consumed by `Custom_RNN_layer`.
+
+    Constructor arguments
+    ---------------------
+    nb_states              : int, number of physical (non-mislinking) states.
+    nb_gaussians           : int, number of Gaussian factors per recurrence step.
+    nb_obs_vars            : int, number of observed variables (typically 1: position).
+    nb_hidden_vars         : int, number of hidden variables per time step
+                             (e.g. 2 = position + anomalous variable).
+    params                 : array (nb_states, 5), initial recurrence parameters.
+    initial_params         : array (nb_states, >=1), initial-spread parameters.
+    initial_fractions      : array (1, nb_states+1), pre-softmax initial mixture.
+    max_linking_distance   : scalar, used to define the mislinking state.
+    constraint_function    : callable, see `constraint_function` below.
+    reference_dt           : scalar, reference frame duration the parameters
+                             are expressed in. Per-step rescaling to actual
+                             `dts` is done inside `constraint_function`.
+    vary_params,
+    vary_initial_params,
+    vary_initial_fractions : optional float masks (same shape as the
+                             corresponding parameter arrays). Entries equal
+                             to 1 train normally; entries equal to 0 are
+                             frozen via `tf.stop_gradient`. Defaults to all-ones.
+    sequence_length        : int, number of parallel state-history sequences
+                             tracked by the segmented RNN (default 3).
+    carryover              : bool, if True allocate buffers that persist
+                             between successive batches of the same tracks.
+
+    `call` arguments
+    ----------------
+    inputs        : tensor of shape (track_len, nb_gaussians, nb_tracks,
+                                     nb_states, nb_obs_vars, nb_dims).
+                    Already-transposed observations.
+    input_LocErrs : per-step localisation error, shape compatible with
+                    `constraint_function` (see its docstring).
+    input_dts     : per-step frame durations, shape (nb_tracks, track_len+1).
+    
+    `call` outputs
+    --------------
+    inputs         : passed through unchanged for downstream layers.
+    initial_states : list of tensors fed to `Custom_RNN_layer`:
+                     [Next_coefs, Next_biases, LP,
+                      Log_factors, transition_Log_factors,
+                      reccurent_obs_var_coefs,
+                      reccurent_hidden_var_coefs,
+                      reccurent_next_hidden_var_coefs,
+                      reccurent_biases,
+                      transition_hidden_var_coefs,
+                      transition_biases].
+    '''
     def __init__(
         self,
         nb_states,
@@ -923,7 +981,17 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         sequence_length = 3,
         carryover = True, # do we want a segmented model that carries over the hidden states of the model to the next batches 
         **kwargs):
-        
+        '''
+        Stores configuration on `self` and pre-computes the integration
+        schedules used by `RNN_reccurence_formula`:
+            initial_sequence_phase_1 and _2,
+            recurrent_sequence_phase_1 and _2,
+            final_sequence_phase_1,
+            transition_sequence
+        via `get_sequences(...)`.
+
+        Vary-masks default to all-ones (i.e. fully trainable) when None.
+        '''
         super().__init__(**kwargs)
         
         dtype = self.dtype
@@ -963,15 +1031,26 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         self.carryover = carryover
     
     def build(self, input_shape):
-        dtype = self.dtype
         '''
+        Allocates the trainable model parameters as tf.Variables:
+            - param_vars              : log-domain recurrence parameters,
+                                        constrained from below by log(minval).
+            - initial_param_vars      : log-domain initial-spread parameters,
+                                        constrained from below by log(minval).
+            - initial_fractions       : pre-softmax mixture weights.
+            - max_linking_distance_param : non-trainable scalar.
+        
+        If `carryover=True`, also allocates non-trainable buffers
+        (carryout_coefs, carryout_biases, carryout_LP) sized so the
+        hidden-state representation can be carried from one batch to the
+        next without re-initialising. `nb_sequences = sequence_length *
+        (nb_states + 1)` accounts for the extra mislinking state.
+        
         inputs = transposed_inputs
         input_shape = inputs.shape
-        param_vars = tf.Variable(params,  dtype = dtype, name = 'recurrence_variables', constraint=lambda w: tf.where(tf.greater_equal(w, -1), w, 0.0000001))
-        initial_param_vars = tf.Variable(initial_params,  dtype = dtype, name = 'initial_variables', constraint=lambda w: tf.where(tf.greater_equal(w, 0), w, 0.0000001))
-        initial_fractions = (np.random.rand(1, nb_states+1)*0+1)
-        initial_fractions[0,-1] = -1
         '''
+        
+        dtype = self.dtype
         self.param_vars = tf.Variable(self.params,  dtype = dtype, name = 'recurrence_variables', constraint=lambda w: tf.where(tf.greater_equal(w, tf.math.log(minval)), w, tf.math.log(minval)))
         self.initial_param_vars = tf.Variable(self.initial_params,  dtype = dtype, name = 'initial_variables', trainable = True, constraint=lambda w: tf.where(tf.greater_equal(w, tf.math.log(minval)), w, tf.math.log(minval)))
         self.max_linking_distance_param = tf.Variable(self.max_linking_distance, dtype = dtype, name = 'max linking distance', trainable = False)
@@ -986,8 +1065,37 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
     
     def call(self, inputs, input_LocErrs, input_dts):
         '''
-        dimensions of inputs: time point, gaussian, track, state, observed variable, dim
-        inputs = transposed_inputs
+        Performs the first time step (t = 0) of the RNN.
+
+        Inputs
+        ------
+        inputs        : (track_len, nb_gaussians, nb_tracks, nb_states,
+                         nb_obs_vars, nb_dims) — observed tracks.
+        input_LocErrs : per-step localisation errors for each track.
+        input_dts     : per-step frame durations for each track.
+
+        Pipeline
+        --------
+        1. Apply `vary_*` stop-gradient masks to the trainable parameters that should not be varied.
+        2. Optional `duplicate_states` hook (for parameter sharing in personalized versions of the model).
+        3. Append the mislinking state to `param_vars` and `initial_param_vars`; bump `nb_states` by one.
+        4. Call `constraint_function` to obtain the Gaussian coefficients,
+           biases, std-rescaling factors and per-step Log_factors for aLL
+           time steps.
+        5. Normalise coefficients/biases by Gaussian_stds (unnecessary but potentially useful).
+        6. Slice out the t = 0 coefficients, fold the observation `inputs[0]`
+           into the biases, broadcast to all `sequence_length` parallel
+           histories, and run one pass of `RNN_reccurence_formula`.
+        7. Initialise `LP` with the log-fractions, log-factors and a
+           uniform 1/sequence_length term (normalize the probabilities so they sum to 1).
+
+        Outputs
+        -------
+        inputs         : unchanged.
+        initial_states : the loop-carried tuple consumed by Custom_RNN_layer
+                         (see class docstring).
+        
+        inputs = transposed_inputs # in build_model
         '''
         
         nb_tracks = inputs.shape[2]
@@ -1058,9 +1166,6 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         current_hidden_var_coefs = reccurent_hidden_var_coefs[0]
         
         next_hidden_var_coefs = reccurent_next_hidden_var_coefs[0]
-        inputs[0].shape
-        obs_var_coefs.shape
-        obs_var_coefs[...,None].shape
         biases += tf.reduce_sum(obs_var_coefs[...,None] * inputs[0], -2)
         biases.shape
         initial_biases += tf.reduce_sum(initial_obs_var_coefs[...,None] * inputs[0], -2)
@@ -1099,7 +1204,14 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
 
     def duplicate_states(self, param_vars, initial_param_vars, initial_fractions):
         '''
-        additional function that can be modified to enable several states to share the same parameters 
+        Hook intended to be overridden by subclasses when several physical
+        states should share the same parameter row (e.g. tying a directed
+        and a confined state's diffusion coefficient). Default implementation
+        is the identity map.
+
+        Inputs / outputs
+        ----------------
+        Same three tensors, possibly expanded along the state axis.
         '''
         return param_vars, initial_param_vars, initial_fractions
 
@@ -1107,59 +1219,91 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
 @tf.function
 def constraint_function(all_params, all_initial_params, LocErr, dts,
                         nb_dims, reference_dt, dtype):
-    """
-    all_params = param_vars
-    all_initial_params = initial_param_vars
-    LocErr = input_LocErrs
-    dts = input_dts
-    
-    all_params = params
-    all_initial_params = initial_params
-    LocErr = LocErrs
-    
-    Vectorised, time-varying constraint function.
+    '''
+    Vectorised, time-varying constraint function that makes the link between
+    the model variables and the characteristic parameters of the Gaussians.
 
-    This version batches the computation over *all* time points, so the
-    function is called exactly once (at model-build / initial-layer time)
-    and the recurrent layer just indexes into the leading time axis at
-    each step.
+    Builds the per-step Gaussian coefficients, biases, std-rescaling factors
+    and log-normalising factors describing the joint distribution
+        p(observation_t, hidden_t, hidden_{t+1} | state_t)
+    for all (time, track, state) triples in one pass. Designed to be used in the
+    call of the layer `Initial_layer_constraints`.
 
     Parameters
     ----------
-    all_params : tensor, shape (nb_states, 5)
-        Columns: [log_LocErr_unused, log_d, ano, log_q, is_directed_flag].
-    all_initial_params : tensor, shape (nb_states, >=1)
-        Column 0 is log(initial_position_spread).
-    LocErr : tensor
-        Per-step localisation error.  Accepted shapes:
-          (nb_tracks, track_len)
-          (nb_tracks, track_len, 1)
-          (nb_tracks, track_len, nb_dims)
-        A trailing dim axis (if present) is averaged out so LocErr reduces
-        to one scalar per (track, time).
-    dts : tensor
-        Per-step frame duration.  Accepted shapes:
-          (nb_tracks, track_len+1)
-          (nb_tracks, track_len+1, 1)
-          NB: dts must have one more time step that the actual track length to accomodate dt_ratio_next in case of carryover 
-    nb_dims : int
-        Number of spatial dimensions.
-    reference_dt : scalar float or 0-D tensor
-        Reference time step.
-    dtype : str
-        TensorFlow dtype (e.g. 'float64').
+    all_params         : (nb_states, 5) — columns
+                         [log_LocErr_unused, log_d, ano, log_q, is_directed_flag].
+                         `log_d`  : log diffusion length per reference_dt.
+                         `ano`    : in directed regime acts as log drift speed,
+                                    in confined regime acts as a logistic well
+                                    confinement (l = sigmoid(ano)).
+                         `log_q`  : log std of the anomalous-variable noise.
+                         `is_directed_flag` : 1 = directed motion, 0 = confined.
+    all_initial_params : (nb_states, >=1), column 0 is log(initial spread).
+    LocErr             : per-step localisation error. Accepted shapes
+                         (nb_tracks, track_len),
+                         (nb_tracks, track_len, 1) or
+                         (nb_tracks, track_len, nb_dims). A trailing dim axis
+                         is averaged out.
+    dts                : per-step frame durations, shape (nb_tracks, track_len+1)
+                         or (nb_tracks, track_len+1, 1). Must have one extra
+                         time step relative to the track length to support
+                         the directed-mode `dt_ratio_next` rescaling at
+                         segment carryovers.
+    nb_dims            : int, spatial dimensionality. Typically set to 2.
+    reference_dt       : scalar, reference frame duration the parameters
+                         are expressed in.
+    dtype              : tensorflow dtype string (e.g. 'float64').
+    
+    Per-step continuous-time rescaling
+    ----------------------------------
+    Given the parameters at `reference_dt`, this routine rescales them to
+    the actual `dts[t]`:
+        d  = d_ref * sqrt(dt_ratio)
+        q  = q_ref * sqrt(dt_ratio)
+        v  = v_ref * dt_ratio                 (directed regime)
+        l  = 1 - exp(-l_ref_c * dt_ratio)     (confined regime, with l_ref_c = -log(1 - sigmoid(ano)))
+    For directed states the ano-coefficient of the recurrent g2 Gaussian is
+    further scaled by `dts[t+1]/dts[t]` to keep
+        E[ano_{t+1} | ano_t] = (dts[t+1]/dts[t]) * ano_t.
 
     Returns
     -------
-    Twelve-tuple with the same ordering as the previous version.  Every
-    coefficient tensor now has a leading time axis:
+    A 15-tuple (in this order):
+        hidden_vars              : (track_len, 3, nb_tracks, nb_states, 4)
+                                   recurrent hidden-variable coefficients,
+                                   last axis = [pos_t, ano_t, pos_{t+1}, ano_{t+1}].
+        obs_vars                 : (track_len, 3, nb_tracks, nb_states, 1)
+                                   recurrent observation coefficients.
+        Gaussian_stds            : ones, shape compatible with hidden_vars.
+        biases                   : zeros, shape (track_len, 3, nb_tracks,
+                                   nb_states, nb_dims).
+        initial_hidden_vars      : (2, nb_tracks, nb_states, 2)
+                                   initial-step hidden-variable coefficients.
+        initial_obs_vars         : zeros, (nb_hidden_vars, nb_tracks,
+                                   nb_states, nb_obs_vars).
+        initial_Gaussian_stds    : ones, (nb_hidden_vars, nb_tracks,
+                                   nb_states, 1).
+        initial_biases           : zeros, (nb_transition_gaussians,
+                                   nb_tracks, nb_states, nb_dims).
+        transition_hidden_vars   : (track_len, 1, nb_tracks, nb_states, 2)
+                                   coefficients of the extra Gaussian inserted
+                                   at state transitions.
+        transition_Gaussian_stds : ones, matching shape.
+        transition_biases        : zeros, matching shape.
+        integration_variable_index : tf.constant(1) — index of the variable
+                                   integrated out at transitions.
+        Log_factors              : (track_len, nb_tracks, nb_states)
+                                   per-step log-normalising factor for the
+                                   recurrent Gaussians.
+        initial_Log_factors      : (nb_tracks, nb_states) factor for t = 0.
+        transition_Log_factors   : (track_len, nb_tracks, nb_states) factor
+                                   to apply at state transitions.
 
-        (track_len, nb_gaussians, nb_tracks, nb_states, nb_vars_last)
-
-    so callers should slice ``tensor[t]`` at time step ``t`` rather than
-    re-invoke this function.
-    """
-
+    All coefficient tensors carry a leading time axis so callers slice
+    `tensor[t]` at time step t.
+    '''
+    
     # ------------------------------------------------------------------
     # Bookkeeping constants
     # ------------------------------------------------------------------
@@ -1361,24 +1505,89 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
 def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_factors, reshaped_transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, sequence_phase_1, sequence_phase_2, transition_mask, transition_sequence, transition_mean, transition_var, gamma_dist_mean, gamma_dist_var, states, dt_ratios):
     print('LP',LP)
     '''
-    First we compute the additional likelihood after integration over the last hidden 
-    states for the sequences that transition. Do to so, we make all the previous sequences 
-    transition and fuse them into `nb_states` sequences (the fist of the next)
+    One recurrent step of the model.
+
+    Conceptual flow
+    ---------------
+    Each track maintains `sequence_length * nb_states` parallel hypotheses
+    ("sequences") about its hidden-state history. At every time step:
     
-    reshaped_Log_factors, reshaped_transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = log_factors_i, trans_log_factors_i, rec_obs_i, rec_hid_i, rec_next_hid_i, rec_bias_i, trans_hid_i, trans_bias_i
-    transition_mean, transition_var = trans_mean_i, trans_var_i
+      1. For every existing sequence, generate `nb_states` candidate
+         continuations: one for each possible next state. Sequences whose
+         next state differs from their current state ("transition" branches,
+         selected by `transition_mask`) get an extra integration over the
+         hidden variable that changes at the transition (via
+         `transition_RNN_reccurence_formula` and `transition_sequence`).
+      2. Weight each branch by the Gamma-distributed dwell-time hazard
+            P(transition at age k | survived to k)
+              = pdf(k) / (1 - cdf(k))
+         using `gamma_dist_mean`/`gamma_dist_var` as the per-pair Gamma
+         moments. Non-transition branches get the complementary survival
+         probability.
+      3. Fold the new observation `input_i` into the recurrent biases and
+         run one pass of `RNN_reccurence_formula` to update the analytic
+         hidden-variable coefficients.
+      4. For each (sequence, next_state), reduce the duplicated branches
+         back to a single sequence by exp-log-sum-weighting them by their
+         likelihood (including the determinant of the next-step Gaussian
+         coefficients), updating `states`, segment lengths and Gamma
+         moments accordingly.
+      5. The sequence buffer would now contain `sequence_length+1` entries
+         per state; the oldest two-state slab is merged back into the rest
+         by another weighted reduction so the buffer stays at
+         `sequence_length * nb_states`.
+
+    Inputs
+    ------
+    input_i                          : (1, nb_tracks, 1, 1, nb_dims) — current obs.
+    Prev_coefs, Prev_biases          : analytic hidden-variable coefficients
+                                       and biases carried from previous step.
+    LP                               : (nb_tracks, sequence_length*nb_states)
+                                       running log-likelihood per sequence.
+    segment_len                      : (nb_tracks, sequence_length*nb_states)
+                                       age (in steps assuming 1 step = reference_dt) 
+                                       of the current segment.
+    reshaped_Log_factors,
+    reshaped_transition_Log_factors  : per-pair log normalisers for this step.
+    reccurent_*  /  transition_*     : per-step coefficient slices coming
+                                       from `constraint_function`.
+    sequence_phase_1/2               : integration schedules for the
+                                       recurrent step.
+    transition_mask                  : (1, sequence_length*nb_states**2)
+                                       1.0 where the candidate is a true
+                                       state change, 0.0 otherwise.
+    transition_sequence              : integration schedule for the
+                                       transition branches.
+    transition_mean, transition_var  : (nb_tracks, nb_states**2) per-pair
+                                       Gamma moments at the current step.
+    gamma_dist_mean, gamma_dist_var  : (nb_tracks, sequence_length*nb_states**2)
+                                       Gamma moments inherited by each
+                                       sequence (set when the segment was born).
+    states                           : (nb_tracks, sequence_length*nb_states,
+                                       sequence_length, nb_states) one-hot
+                                       state-history per sequence.
+    dt_ratios                        : (nb_tracks,) dt_i / reference_dt for
+                                       this step, used to advance segment
+                                       lengths.
+
+    Returns
+    -------
+    new_Next_coefs       : updated hidden-variable coefficients.
+    new_Next_biases      : updated biases.
+    new_LPs              : updated log-likelihoods per sequence.
+    new_segment_len      : updated segment ages.
+    new_gamma_dist_mean,
+    new_gamma_dist_var   : updated per-sequence Gamma moments.
+    new_states           : updated state-history tensor (length
+                           sequence_length, oldest entry dropped).
     '''
-    
+
     current_states = states[:,:,-1:]
-    Prev_coefs.shape
-    Prev_coefs[:,-1, 0]
     nb_dims = input_i.shape[-1]
     nb_tracks = LP.shape[0]
     nb_hidden_vars = Prev_coefs.shape[3]
     nb_states = reccurent_hidden_var_coefs.shape[2]
     sequence_length = LP.shape[1]//nb_states
-    Prev_coefs.shape
-    Prev_coefs[:,-1,0]
     
     Prev_coefs2 = tf.repeat(Prev_coefs, nb_states, axis = 2)
     Prev_biases2 =  tf.repeat(Prev_biases, nb_states, axis = 2)
@@ -1387,11 +1596,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     
     alternative_Prev_coefs = tf.concat((Prev_coefs2, tf.identity(transition_hidden_var_coefs)), axis = 0)
     alternative_Prev_biases = tf.concat((Prev_biases2, tf.identity(transition_biases)), axis = 0)
-    alternative_Prev_coefs[:,0,0]
-    nb_dims = input_i.shape[-1]
-    alternative_Prev_coefs.shape
-    alternative_Prev_coefs[:,1,0]
-    transition_hidden_var_coefs[:,-1,:]
+    
     transition_Prev_coefs, transition_Prev_biases, LC = transition_RNN_reccurence_formula(current_hidden_var_coefs = alternative_Prev_coefs, # coefficients of the hidden variables that are updated
                                                                          next_hidden_var_coefs = tf.constant(0, dtype = dtype, shape =  alternative_Prev_coefs.shape),
                                                                          biases = alternative_Prev_biases,
@@ -1497,7 +1702,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     Next_states = tf.concat([transition_states, stable_states], axis = 1)
     
     '''
-    now, the `nb_states` last sequences must be fused with the previous sequences to
+    Now, the `nb_states` last sequences must be fused with the previous sequences to
     keep the number of sequences to `sequence_length`
     '''
     
@@ -1565,9 +1770,102 @@ inputs[:,:,2]
 
 
 class Custom_RNN_layer(tf.keras.layers.Layer):
+    '''
+    Time-varying recurrent layer that drives `RNN_cell` across the track.
+
+    Responsibilities
+    ----------------
+    1. Owns the trainable Gamma-distribution parameters of the dwell-time
+       model (`transition_shapes`, `transition_rates`).
+    2. Builds the (1, sequence_length*nb_states**2) `transition_mask` and
+       state-pair `indices`.
+    3. Optionally allocates carry-over buffers
+       (carryout_segment_len, carryout_gamma_dist_mean,
+       carryout_gamma_dist_var) when `carryover=True`.
+    4. On `call`, computes the per-step Gamma moments via
+       `transition_param_function`, slices the time-varying tensors so that
+       index 0 lines up with `inputs[0]` (= actual time step 1, since step 0
+       was consumed by `Initial_layer_constraints`), and runs a
+       `tf.while_loop` whose body invokes `RNN_cell`. Tracks marked dead by
+       `mask` are frozen on a per-step basis. This mask is important to account
+       for tracks of various lengths. Per-step diagnostics are collected in
+       TensorArrays.
     
+    Constructor arguments
+    ---------------------
+    nb_tracks                : int.
+    transition_shapes        : (nb_states, nb_states) initial Gamma shape.
+    transition_rates         : (nb_states, nb_states) initial Gamma rate.
+    density                  : float, used to derive the mislinking rate
+                               from the effective diffusion.
+    nb_states                : int, number of physical states (NOT including
+                               the mislinking state — the layer adds one,
+                               so `self.nb_states = nb_states + 1`).
+    sequence_phase_1/2,
+    transition_sequence      : integration schedules for `RNN_cell`.
+    transition_param_function: callable
+                               (transition_shapes, transition_rates,
+                                density, Fs, effective_ds, dts_TN,
+                                reference_dt, dtype)
+                               -> (transition_shapes_full (number of states, number of states),
+                                   transition_rates_full  (number of time steps, number of tracks, number of states, number of states)).
+    sequence_length          : int (default 3).
+    vary_transition_shapes,
+    vary_transition_rates    : optional float stop-gradient masks.
+    carryover                : bool. used to indicate if tracks are splitted into 
+                               segments across batches
+
+    `call` arguments
+    ----------------
+    inputs                          : (number of time steps-1, 1, number of tracks, 1, 1, nb dims) already sliced.
+    input_dts                       : (number of tracks, number of time steps) per-step frame durations
+                                      (NOT yet sliced).
+    reference_dt                    : scalar reference frame duration.
+    mask                            : (number of tracks, number of time steps-1) per-step alive mask (already
+                                      sliced).
+    Prev_coefs, Prev_biases, LP     : initial loop-carried tensors from
+                                      `Initial_layer_constraints`.
+    Log_factors,
+    transition_Log_factors          : (number of time steps, number of tracks, number of states) per-step normalisers.
+    reccurent_obs_var_coefs,
+    reccurent_hidden_var_coefs,
+    reccurent_next_hidden_var_coefs,
+    reccurent_biases,
+    transition_hidden_var_coefs,
+    transition_biases               : per-step coefficient stacks (full,
+                                      not yet sliced).
+    log_ds                          : log diffusion of the physical states,
+                                      used to compute effective_ds.
+    softmax_inv_Fractions           : pre-softmax mixture weights, used to
+                                      compute Fs (state occupancies).
+    anomalous_factors               : ano values per state.
+    isdir                           : 0/1 mask, directed vs confined per state.
+    isfirst                         : (N,) 0/1 flag per track. When 1 the
+                                      carryover buffers are ignored and the
+                                      sequence is started fresh; when 0 the
+                                      track resumes from the buffers
+                                      (only meaningful if `carryover=True`).
+
+    Returns
+    -------
+    Prev_coefs, Prev_biases, LP        : final loop-carried recurrence state.
+    segment_len, gamma_dist_mean,
+    gamma_dist_var                     : final dwell-time bookkeeping.
+    All_states                         : (number of tracks, number of time steps-sequence_length, nb_states)
+                                          per-step predicted state distributions
+                                          (cropped to discard the warm-up).
+    All_coefs, All_biases, All_LPs     : per-step diagnostics, transposed to
+                                          (track, time, ...) layout.
+    states                             : final per-sequence state-history
+                                          tensor (shape as in `RNN_cell`).
+    '''
     def __init__(self, nb_tracks, transition_shapes, transition_rates, density, nb_states, sequence_phase_1, sequence_phase_2, transition_sequence, transition_param_function, sequence_length = 3, vary_transition_shapes = None, vary_transition_rates = None, carryover = False, **kwargs):
-        
+        '''
+        Stores configuration and `vary_*` masks (defaulting to all-ones).
+        Note `self.nb_states = nb_states + 1`: the constructor argument
+        counts only the physical states, the layer internally accounts for
+        the appended mislinking state. No tf.Variables are created here.
+        '''
         if type(vary_transition_rates) == type(None):
             vary_transition_rates = tf.ones(transition_rates.shape, dtype = dtype)
         
@@ -1589,6 +1887,19 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         super().__init__(**kwargs)
     
     def build(self, input_shape):
+        '''
+        Allocates trainable Gamma-distribution parameters and pair-indexing
+        helpers used by `call`:
+            transition_rates   : tf.Variable, log-floored at log(minval).
+            transition_shapes  : tf.Variable, unconstrained.
+            indices            : (sequence_length*nb_states**2, 2) int tensor
+                                 enumerating (current_state, next_state) pairs.
+            transition_mask    : (1, sequence_length*nb_states**2) float, 1.0 where current != next.
+        If `carryover=True`, also allocates non-trainable buffers
+        carryout_segment_len, carryout_gamma_dist_mean,
+        carryout_gamma_dist_var so dwell-time bookkeeping survives across
+        successive batches of the same tracks.
+        '''
         nb_states = self.nb_states
         transition_shapes, transition_rates = self.initial_transition_params
         sequence_length = self.sequence_length
@@ -1617,22 +1928,46 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
          transition_hidden_var_coefs, transition_biases,
          log_ds, softmax_inv_Fractions, anomalous_factors, isdir,
          isfirst=None):
-        """
-        Time-varying recurrent step.
+        '''
+        Drives `RNN_cell` across the track in a tf.while_loop.
+
+        Pipeline
+        --------
+        with T the number of time steps
+        N the nuumber of tracks
+        P the number of sequences considering the transitions (nb_states**2*sequence_length)
         
-        Shape conventions
-        -----------------
-        inputs                          : (T-1, 1, N, 1, 1, D)   already sliced
-        mask                            : (N, T-1)               already sliced
-        input_dts                       : (N, T)                 NOT sliced
-        Log_factors                     : (T, N, S)
-        transition_Log_factors          : (T, N, S)
-        reccurent_*  /  transition_*    : (T, ...)               NOT sliced
-        
-        All "_full" tensors below carry a leading time axis of length T.
-        All "_seq"  tensors below have been sliced [1:] so that index 0
-        corresponds to the FIRST recurrent step (= actual time index 1).
-        """
+        1. Apply stop-gradient `vary_*` masks to the trainable Gamma params.
+        2. Compute effective diffusion per state
+               effective_ds = exp(log_ds) + 2 * exp(anomalous_factors) * isdir
+           and softmax fractions Fs, then call `transition_param_function` to 
+           obtain the time-varying transition rates (T, N, S, S).
+        3. Flatten the (S, S) state-pair axis into the unrolled
+           P = sequence_length * S**2 axis used by `RNN_cell` via einsum
+           contractions with one-hot row/column matrices, producing per-step
+              flat_Log_full        : (T, N, P) merged Log_factors /
+                                     transition_Log_factors selected by
+                                     transition_mask
+              transition_mean_full : (T, N, P)  Gamma mean
+              transition_var_full  : (T, N, P)  Gamma variance
+        4. Slice every time-varying tensor [1:] so that index 0 aligns with
+           inputs[0] (= actual time step 1; step 0 was consumed by
+           Initial_layer_constraints).
+        5. Initialise loop carriers:
+               segment_len      = ones,
+               gamma_dist_mean  = transition_mean_full[0],
+               gamma_dist_var   = transition_var_full[0],
+               states           = identity-like one-hot history,
+           overwriting them with the carryover buffers where isfirst == 0
+           (only when self.carryover is True).
+        6. Loop body: for each step i, log diagnostics into TensorArrays,
+           call `RNN_cell`, then apply the per-step alive `mask` to either
+           accept or reject the update on a track-by-track basis.
+        7. After the loop: stack the TensorArrays and transpose them to
+           (track, time, ...) layout. Drop the first `sequence_length - 1`
+           predicted-state entries (warm-up where the buffer is not yet full).
+
+        '''
         
         nb_tracks              = self.nb_tracks
         sequence_phase_1       = self.sequence_phase_1
@@ -1834,7 +2169,6 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
                 tf.math.abs(Next_coefs[0, :, :, 0]
                             * Next_coefs[1, :, :, 1]) + 1e-20))[10:20]
             
-            
             # masked update: only advance still-alive tracks
             mask_coef   = mask_i[None, :, None, None]
             mask_scalar = mask_i[:, None]
@@ -2007,8 +2341,11 @@ def extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims, sequence_l
     # Estimate the mixture variance = E[Var] + Var[E]
     return pos_mean, anomalous_mean, position_std, anomalous_std
 
-def extract_smooth_hidden_variables(tracks, masks, pred_model, batch_size, sequence_length, motion_types):
+def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model, batch_size, sequence_length, motion_types):
     '''
+    tracks = tf_tracks
+    dts = time_steps
+    
     Sloppy estimate of the hidden variables given all the known positions. While
     the proper way to do it is to integrate over all the hidden variables (very
     feasible but a little complex), we do that by running pred_model.predict on
@@ -2022,13 +2359,20 @@ def extract_smooth_hidden_variables(tracks, masks, pred_model, batch_size, seque
     '''
     motion_types = np.array(motion_types)
     nb_dims = tracks.shape[-1]
-    preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict((tracks, masks), batch_size = batch_size)
+    preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict((tracks, LocErrs, dts, masks), batch_size = batch_size)
     
     # transpose the shape and rate matrices for the hidden state inference on the reversed tracks
-    pred_model.weights[4].assign(tf.transpose(pred_model.weights[4]))
-    pred_model.weights[5].assign(tf.transpose(pred_model.weights[5]))
+    pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
+    pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
     
-    preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict((tracks[:,:, ::-1], masks[:,::-1]), batch_size = batch_size)
+    inverse_dts = np.concatenate((dts[:, -1:], dts[:, :-1]), axis = 1)[:, ::-1] # the last time step of dts is a dummy value that must not be used
+    
+    preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict((tracks[:,:, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:,::-1]), batch_size = batch_size)
+    
+    # restore the model so subsequent calls behave normally
+    pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
+    pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
+
     pos_mean_1, anomalous_mean_1, position_std_1, anomalous_std_1 = extract_hidden_variables(All_coefs_1, All_biases_1, All_LPs_1, nb_dims, sequence_length)
     pos_mean_2, anomalous_mean_2, position_std_2, anomalous_std_2 = extract_hidden_variables(All_coefs_2, All_biases_2, All_LPs_2, nb_dims, sequence_length)
     
@@ -2052,22 +2396,156 @@ def extract_smooth_hidden_variables(tracks, masks, pred_model, batch_size, seque
         w2 = 1 / var2
         return (w1 * x1 + w2 * x2) / (w1 + w2)
     
-    pos_mean = optimal_estimator(pos_mean_1, pos_mean_2, position_std_1**2, position_std_2**2)
-    pos_std = (1/((1 / position_std_1**2 + 1 / position_std_2**2)))**0.5
+    position_mean = optimal_estimator(pos_mean_1, pos_mean_2, position_std_1**2, position_std_2**2)
+    position_std = (1/((1 / position_std_1**2 + 1 / position_std_2**2)))**0.5
     
     anomalous_mean = optimal_estimator(anomalous_mean_1, anomalous_mean_2, anomalous_std_1**2, anomalous_std_2**2)
     anomalous_std = (1/((1 / anomalous_std_1**2 + 1 / anomalous_std_2**2)))**0.5
     
     mean_preds = (preds_1 + preds_2[:,::-1])/2
     
-    # We can average the position along the state axis as the state has a small influence on the estimated position
-    w = mean_preds[:,1:-1,:, None]
-    position_mean = np.sum(w * pos_mean, axis = 2)
-    position_var = np.sum((pos_std**2 + pos_mean**2) * w, axis = 2) - np.sum(pos_mean * w, axis=2)**2
-    position_std = position_var**0.5
-    
     # The anomalous variable cannot be averaged along the state axis to avoid mixing velocity vector and potential well position which have different orders of magnitude
     return position_mean, position_std, anomalous_mean, anomalous_std, mean_preds
+
+def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
+                                    batch_size, sequence_length, motion_types, reference_dt):
+    '''
+    Variable-dt-aware version: returns per-step VELOCITY (dt-independent)
+    for directed states instead of the step-wise displacement returned by
+    the fixed-dt version.
+
+    Why a rescaling is needed
+    -------------------------
+    Inside `constraint_function` the anomalous variable is encoded as
+        directed :  ano_t  ~  velocity_t  *  dts[t]            (depends on dt)
+        confined :  ano_t  ~  well anchor                       (dt-independent)
+    so the raw `ano` returned by the forward pass is a step displacement
+    for directed states.  Dividing by the dt the model actually used at
+    that step recovers the velocity, which is what we want when dts vary
+    between steps.
+
+    Parameters
+    ----------
+    motion_types : iterable of length nb_states (the *physical* states only)
+        1 for a directed state, 0 for a confined state.  The mislinking
+        state appended internally by the model has is_directed_flag = 0
+        and is treated as confined here.
+
+    Other arguments and return signature are unchanged from the fixed-dt
+    version.  `anomalous_mean` / `anomalous_std` are now velocities (for
+    directed states) and well-anchor positions (for confined states) — both
+    dt-independent quantities.
+    '''
+    motion_types = np.array(motion_types)
+    nb_dims = tracks.shape[-1]
+
+    # ------------------------------------------------------------------
+    # Forward pass
+    # ------------------------------------------------------------------
+    preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict(
+        (tracks, LocErrs, dts, masks), batch_size=batch_size)
+
+    # ------------------------------------------------------------------
+    # Reverse pass — transpose the Gamma shape/rate matrices so that
+    # transitions s -> s' in the original direction become s' -> s.
+    # ------------------------------------------------------------------
+    pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
+    pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
+
+    # The last column of dts is a dummy (carryover slot) that must not be
+    # used as a real step.  Putting it at position 0 of the reversed array
+    # keeps every "real" dt aligned with the reversed observations.
+    inverse_dts = np.concatenate((dts[:, -1:], dts[:, :-1]), axis=1)[:, ::-1]
+
+    preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict(
+        (tracks[:, :, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:, ::-1]),
+        batch_size=batch_size)
+
+    # restore the model so subsequent calls behave normally
+    pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
+    pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
+    
+    # ------------------------------------------------------------------
+    # Per-pass marginals of the hidden variables
+    # ------------------------------------------------------------------
+    pos_mean_1, anomalous_mean_1, position_std_1, anomalous_std_1 = \
+        extract_hidden_variables(All_coefs_1, All_biases_1, All_LPs_1,
+                                 nb_dims, sequence_length)
+    
+    pos_mean_2, anomalous_mean_2, position_std_2, anomalous_std_2 = \
+        extract_hidden_variables(All_coefs_2, All_biases_2, All_LPs_2,
+                                 nb_dims, sequence_length)
+
+    # ==================================================================
+    # NEW: convert directed-state ano (= velocity * dt) to velocity.
+    #
+    # All_coefs_*[i] encodes p(pos_{i+1}, ano_{i+1} | obs_{0..i}), so the
+    # i-th entry of anomalous_mean_1 used dts[:, i+1] and the i-th entry
+    # of anomalous_mean_2 used inverse_dts[:, i+1].  Confined states are
+    # left unchanged because their ano is the dt-independent well anchor.
+    # The mislinking state (appended last) has is_directed_flag = 0, so
+    # we extend motion_types with a 0.
+    # ==================================================================
+    isdir_state  = motion_types[None, None, :, None]   # broadcasts to (1, 1, nb_states+1, 1)
+    isconf_state = 1.0 - isdir_state
+    
+    nb_time = anomalous_mean_1.shape[1]                      # = T - 1
+
+    fwd_dt = dts[:,         1:1+nb_time][:, :, None, None] # (N, T-1, 1, 1)
+    rev_dt = inverse_dts[:, 1:1+nb_time][:, :, None, None] # (N, T-1, 1, 1)
+    
+    # 1/dt for directed states, 1.0 for confined states
+    fwd_scale = isdir_state / fwd_dt * reference_dt + isconf_state
+    rev_scale = isdir_state / rev_dt * reference_dt + isconf_state
+    
+    anomalous_mean_1 = anomalous_mean_1 * fwd_scale
+    anomalous_std_1  = anomalous_std_1  * fwd_scale
+    anomalous_mean_2 = anomalous_mean_2 * rev_scale
+    anomalous_std_2  = anomalous_std_2  * rev_scale
+    # ==================================================================
+
+    # ------------------------------------------------------------------
+    # Align forward and reverse passes to the same time axis
+    # ------------------------------------------------------------------
+    pos_mean_1     = pos_mean_1[:, 1:]
+    position_std_1 = position_std_1[:, 1:]
+    pos_mean_2     = pos_mean_2[:, :0:-1]
+    position_std_2 = position_std_2[:, :0:-1]
+    
+    # Reversing time flips the sign of a velocity (drift) but not of a
+    # well anchor.  This is exactly the same logic as before — it acts on
+    # the *velocity* now rather than on `velocity * dt`, which is fine
+    # because dt is positive.
+    motion_type_sign = (-1 * (motion_types == 1)
+                        + 1 * (motion_types == 0))
+    motion_type_sign = motion_type_sign[None, None, :, None]
+
+    anomalous_mean_1 = anomalous_mean_1[:, 1:]
+    anomalous_std_1  = anomalous_std_1[:, 1:]
+    anomalous_mean_2 = motion_type_sign * anomalous_mean_2[:, :0:-1]
+    anomalous_std_2  = anomalous_std_2[:, :0:-1]
+
+    # ------------------------------------------------------------------
+    # Precision-weighted fusion (smoothing)
+    # ------------------------------------------------------------------
+    def optimal_estimator(x1, x2, var1, var2):
+        w1 = 1 / var1
+        w2 = 1 / var2
+        return (w1 * x1 + w2 * x2) / (w1 + w2)
+
+    position_mean = optimal_estimator(pos_mean_1, pos_mean_2, position_std_1**2, position_std_2**2)
+    position_std  = (1 / (1 / position_std_1**2 + 1 / position_std_2**2))**0.5
+
+    anomalous_mean = optimal_estimator(anomalous_mean_1, anomalous_mean_2, anomalous_std_1**2, anomalous_std_2**2)
+    anomalous_std  = (1 / (1 / anomalous_std_1**2 + 1 / anomalous_std_2**2))**0.5
+
+    mean_preds = (preds_1 + preds_2[:, ::-1]) / 2
+
+    # `anomalous_mean` is now:
+    #   - velocity (dt-independent) for directed states
+    #   - well-anchor position       for confined states
+    return position_mean, position_std, anomalous_mean, anomalous_std, mean_preds
+
 
 class Final_layer(tf.keras.layers.Layer):
     def __init__(self, sequence_phase_1, nb_dims, sequence_length, **kwargs):
@@ -2075,6 +2553,9 @@ class Final_layer(tf.keras.layers.Layer):
         self.nb_dims = nb_dims
         self.sequence_length = sequence_length
         super().__init__(**kwargs)
+    '''
+    Final layer of the model that integrates over the remaining hidden variables
+    '''
     
     def build(self, input_shape):
         self.built = True
@@ -2778,15 +3259,20 @@ def build_model(track_len, # maximum number of time points in the input tracks
     tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
     
     softmax_inv_Fractions = Init_layer.initial_fractions
+    log_ds = Init_layer.param_vars[:, 1]
+    anomalous_factors = Init_layer.param_vars[:, 2]
+    isdir = Init_layer.param_vars[:, 4]
+    
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
     
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
     layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
-
-    Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_states, All_coefs, All_biases, All_LPs, states = layer(sliced_inputs, input_dts, reference_dt, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir)
     
+    isfirst = tf.ones((batch_size), dtype = dtype)
+    Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_states       , All_coefs, All_biases, All_LPs,        states = layer(sliced_inputs, input_dts, reference_dt, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir, isfirst = isfirst)
+
     F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer([Prev_coefs, Prev_biases, LP, All_states, states])
     

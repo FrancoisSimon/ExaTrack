@@ -184,46 +184,23 @@ with tf.device(device):
     history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
 
 '''
-preds = model.predict(seq)
-likelihood = MLE_loss(preds, preds).numpy()
-print(likelihood)
+Then, we can check if build_model works well too and perform inference on the hidden
+states
+'''
 
-All_states, All_coefs, All_biases, All_LPs = pred_model.predict(seq)
+weights = model.get_weights()
+tracks, LocErrs, time_steps, masks = exatrack.padding(track_list, LocErr_list, dt_list, batch_size = None)
+tf_tracks = tf.constant(tracks[:,None, :, None, None, :nb_dims], dtype = 'float64')
 
-All_LPs.shape
-
-tf.math.logsumexp(All_LPs[0])
-
-preds.shape
-All_LPs.shape
-max_LP =np.max(All_LPs, 2, keepdims = True)
-reduced_LP = All_LPs - max_LP
-pred = tf.math.log(np.sum(np.exp(reduced_LP), 2, keepdims = True)) + max_LP
-pred = pred[:,:,0]
-
-plt.figure()
-plt.plot(pred[0])
-
-segment_length = 10
-
-seq = exatrack.TrackSegmentSequence(track_list,
-                                    LocErr_list, 
-                                    dt_list,
-                                    batch_size=batch_size,
-                                    segment_length=segment_length,
-                                    min_segment_length=4,
-                                    cutoff_batch_treshhold=0.5)
-
-
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
+model, pred_model = exatrack.build_model(tracks.shape[1], # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
-                params, # recurrent parameters of the model
-                initial_params, # initial parameters of the model
-                transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
-                transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions,
-                batch_size, # number of tracks analysed at the same time
-                reference_dt,
+                params = weights[0], # recurrent parameters of the model
+                initial_params = weights[1], # initial parameters of the model
+                transition_rates = weights[7], # transition rates for each pair of states (gamma distributed transition lifetimes)
+                transition_shapes = weights[8], # transition shapes for each pair of states (gamma distributed transition lifetimes)
+                initial_fractions = weights[2],
+                batch_size = batch_size, # number of tracks analysed at the same time
+                reference_dt = reference_dt,
                 nb_dims = nb_dims, # Number of dimensions of the tracks
                 sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
                 max_linking_distance = max_linking_distance, # Maximum linking distance or standard deviation for the expected misslinking distance.
@@ -234,17 +211,98 @@ model, pred_model = exatrack.build_segment_model(segment_length, # maximum numbe
                 vary_transition_shapes = vary_transition_shapes,
                 vary_transition_rates = vary_transition_rates)
 
-LPs, All_states, All_coefs, All_biases, All_LPs = pred_model.predict(seq)
-max_LP =np.max(All_LPs, 2, keepdims = True)
-reduced_LP = All_LPs - max_LP
-pred = tf.math.log(np.sum(np.exp(reduced_LP), 2, keepdims = True)) + max_LP
-pred = pred[:,:,0]
-
-
-plt.plot(pred[0])
-plt.plot(np.arange(9, 18), pred[batch_size])
+preds, All_coefs, All_biases, All_LPs = pred_model.predict((tf_tracks, LocErrs, time_steps, masks), batch_size = batch_size)
+LocErrs.shape
 
 '''
+Plot tracks with state predictions
+'''
+colors = np.array([[1,0,0],
+                   [0,0,1]])
+
+plt.figure(figsize = (15, 15))
+plt.title('State predictions')
+lim = 1.5 # MreB
+nb_rows = 6
+#IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
+for i in range(nb_rows):
+    for j in range(nb_rows):
+        ID = i*nb_rows+j #IDs[i*nb_rows+j]
+        mask = masks[ID]
+        track = tracks[ID, mask.astype(bool)]
+        print(len(track))
+        track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
+        p = preds[ID, mask.astype(bool)][:,:-1]
+        plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
+        plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
+        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
+plt.gca().set_aspect('equal', adjustable='box')
+
+'''
+Inferring the hidden real positions and velocity vector
+'''
+motion_types = list(params[:, 4]) + [0]
+
+position_mean, position_std, anomalous_mean, anomalous_std, mean_preds = exatrack.extract_smooth_hidden_variables(tf_tracks, LocErrs, time_steps, masks, pred_model, batch_size, sequence_length, motion_types, reference_dt)
+
+for track_ID in range(3):
+    plt.figure()
+    mask = masks[track_ID, 1:-1].astype(bool)
+    plt.title('Example of refined positions, track %s'%track_ID)
+    plt.errorbar(np.arange(len(position_mean[track_ID,mask,0])), position_mean[track_ID,mask,0] - np.mean(position_mean[track_ID,mask,0]), yerr = position_std[track_ID,mask,0])
+    plt.errorbar(np.arange(len(position_mean[track_ID,mask,1])), position_mean[track_ID,mask,1] - np.mean(position_mean[track_ID,mask,1]), yerr = position_std[track_ID,mask,1])
+    plt.xlim([-1, tracks.shape[1]-2])
+    plt.ylabel('Position')
+    plt.xlabel('Time point')
+    plt.legend(['x', 'y'])
+
+track_ID = 1
+mask = masks[track_ID, 1:-1].astype(bool)
+plt.figure()
+plt.title('Velocity of the state 0, track %s'%track_ID)
+plt.plot((anomalous_mean[track_ID,mask,0,0]**2 + anomalous_mean[track_ID,mask,0,1]**2)**0.5)
+plt.xlabel('Time step')
+plt.ylabel('Estimated velocity (um/time step)')
+plt.plot(np.arange(tracks.shape[1]-2), 0.005*(1-all_states[:,1:-1][track_ID, mask]))
+
+# mean_preds gives better estimates at transition time points than preds (intermediate probability)
+plt.figure(figsize = (15, 15))
+lim = 2 # MreB
+nb_rows = 6
+plt.title('State predictions with mean_preds')
+for i in range(nb_rows):
+    for j in range(nb_rows):
+        ID = i*nb_rows+j #IDs[i*nb_rows+j]
+        mask = masks[ID]
+        track = tracks[ID, mask.astype(bool)]
+        print(len(track))
+        track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
+        p = mean_preds[ID, mask.astype(bool)][:,:-1]
+        plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
+        plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
+        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
+plt.gca().set_aspect('equal', adjustable='box')
+mean_preds.shape
+
+# Refined position
+plt.figure(figsize = (15, 15))
+lim = 2 # MreB
+nb_rows = 6
+plt.title('Refined particle positions')
+IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
+for i in range(nb_rows):
+    for j in range(nb_rows):
+        ID = i*nb_rows+j #IDs[i*nb_rows+j]
+        mask = masks[ID, 1:-1]
+        track = position_mean[ID, mask.astype(bool)]
+        print(len(track))
+        track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
+        p = mean_preds[:,1:-1][ID, mask.astype(bool)][:,:-1]
+        plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
+        plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
+        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
+plt.gca().set_aspect('equal', adjustable='box')
+mean_preds.shape
 
 
 
