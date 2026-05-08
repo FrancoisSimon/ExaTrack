@@ -47,7 +47,7 @@ def emit_photons(pixel_pos, nb_photons, movie, time, emission_std, pixel_dims):
             movie[time, photon_pos_x, photon_pos_y] = movie[time, photon_pos_x, photon_pos_y] + 1
     return movie
 
-def padding(track_list, LocErr_list = None, frame_list = None, batch_size = None):
+def padding(track_list, LocErr_list = None, dt_list = None, batch_size = None):
     '''
     If tracks have multiple lengths, we need to homogenize the shape to the longest track lengths using padding and mask the state updates of the padding
     
@@ -72,12 +72,15 @@ def padding(track_list, LocErr_list = None, frame_list = None, batch_size = None
     if batch_size is not None:
         nb_tracks = int(np.ceil(nb_tracks/batch_size))*batch_size
     padded_tracks = np.zeros((nb_tracks, max_len, track_list[0].shape[1]), dtype = track_list[0].dtype)
-    if type(frame_list)!= type(None):
-        padded_frames =  np.zeros((nb_tracks, max_len+1), dtype = frame_list[0].dtype) # we need to have a frame array with one additional time step to compute the time step ratios in constraint_function
+    if type(dt_list)!= type(None):
+        padded_dts =  np.zeros((nb_tracks, max_len+1), dtype = dt_list[0].dtype) # we need to have a frame array with one additional time step to compute the time step ratios in constraint_function
     else:
-        padded_frames = None
+        padded_dts = None
     if type(LocErr_list)!= type(None):
-        padded_LocErrs =  np.zeros((nb_tracks,) +  LocErr_list[0].shape, dtype = LocErr_list[0].dtype)
+        if len(LocErr_list[0].shape)==2:
+            padded_LocErrs =  np.zeros((nb_tracks, max_len, LocErr_list[0].shape[1]), dtype = LocErr_list[0].dtype)
+        else:
+            padded_LocErrs =  np.zeros((nb_tracks, max_len), dtype = LocErr_list[0].dtype)
     else:
         padded_LocErrs = None
     
@@ -90,10 +93,10 @@ def padding(track_list, LocErr_list = None, frame_list = None, batch_size = None
             padded_tracks[i, cur_len:] = track[-1] # padding that replicates the edges in case we want to use ExaTrack on the reversed tracks
 
             mask[i, :cur_len] = 1
-            if type(frame_list)!= type(None):
-                frames = frame_list[i]
-                padded_frames[i, :cur_len] = frames
-                padded_frames[i, cur_len:] = frames[-1]
+            if type(dt_list)!= type(None):
+                dts = dt_list[i]
+                padded_dts[i, :cur_len] = dts
+                padded_dts[i, cur_len:] = dts[-1]
                 
             if type(LocErr_list)!= type(None):
                 LocErrs = LocErr_list[i]
@@ -102,7 +105,7 @@ def padding(track_list, LocErr_list = None, frame_list = None, batch_size = None
         else:
             raise Warning('The minimal track length supported is 2 time points. Tracks of 1 time point were discarded.')
     
-    return padded_tracks, padded_LocErrs, padded_frames, mask
+    return padded_tracks, padded_LocErrs, padded_dts, mask
 
 
 def _sample_transitions(state, current_sub_idx, cum_sub_times,
@@ -466,15 +469,6 @@ def simulate_3D_rotational_diffusion(nb_steps, velocities, D_r, dts):
     # Magnitude scaling per step
     return vs * velocities[:, None]
 
-@tf.function(jit_compile=jit_compile)
-def log_gaussian(top, variance=tf.constant(1, dtype = dtype)):
-    return - 0.5*tf.math.log(2*pi*variance) - top**2/(2*variance)
-
-
-@tf.function(jit_compile=jit_compile)
-def norm_log_gaussian(top):
-    return - 0.5*(tf.math.log(2*pi) + top**2)
-
 def read_table(paths, # path of the file to read or list of paths to read multiple files.
                lengths = np.arange(4,40), # number of positions per track accepted (take the first position if longer than max
                dist_th = np.inf, # maximum distance allowed for consecutive positions 
@@ -497,6 +491,7 @@ def read_table(paths, # path of the file to read or list of paths to read multip
         opt_metrics[m] = []
     
     for path in paths:
+    
         if fmt == 'csv':
             data = pd.read_csv(path, sep=',', low_memory=False)
             #data = data.dropna()
@@ -612,6 +607,15 @@ def correct_state_predictions_padding(state_preds, all_masks, sequence_length):
             state_preds[i, track_length - sequence_length:track_length] =  state_preds[i, -sequence_length:]
         
         state_preds[i, track_length:] = 0
+
+@tf.function(jit_compile=jit_compile)
+def log_gaussian(top, variance=tf.constant(1, dtype = dtype)):
+    return - 0.5*tf.math.log(2*pi*variance) - top**2/(2*variance)
+
+
+@tf.function(jit_compile=jit_compile)
+def norm_log_gaussian(top):
+    return - 0.5*(tf.math.log(2*pi) + top**2)
 
 def RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2, next_hidden_var_coefs_1, next_hidden_var_coefs_2, biases_1, biases_2, coef_index, nb_dims = 1):
     '''
@@ -940,6 +944,18 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
                              tracked by the segmented RNN (default 3).
     carryover              : bool, if True allocate buffers that persist
                              between successive batches of the same tracks.
+    LocErr_type            : string,
+                            'Identity': Use the localization error inputs as is.
+                            'Linear'  : Multiplies the localization error inputs 
+                                        by the localization error parameter.
+                                        Useful to avoid a biased estimates 
+                                        (adding an ofset would be good too)
+                            'Photon'  : In case the localization error represents
+                                        a metric proportional to the number of photons
+                                        (e.g. the quality), we estimate the localization
+                                        error as input_LocErrs**0.5 * LocErr parameter. 
+                            'Constant': Do not use input_LocErrs but only the 
+                                        localization error parameter.
 
     `call` arguments
     ----------------
@@ -980,6 +996,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         vary_initial_fractions = None,
         sequence_length = 3,
         carryover = True, # do we want a segmented model that carries over the hidden states of the model to the next batches 
+        LocErr_type = 'Linear', # Choose between Identity to use
         **kwargs):
         '''
         Stores configuration on `self` and pre-computes the integration
@@ -1029,6 +1046,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         self.transition_sequence = transition_sequence
         self.final_sequence_phase_1 = final_sequence_phase_1
         self.carryover = carryover
+        self.LocErr_type = LocErr_type
     
     def build(self, input_shape):
         '''
@@ -1062,6 +1080,22 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
             self.carryout_coefs = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, input_shape[5])), dtype = dtype, trainable = False)
             self.carryout_biases = tf.Variable(np.zeros(self.carryout_coefs.shape), dtype = dtype, trainable = False)
             self.carryout_LP = tf.Variable(np.zeros((input_shape[2], nb_sequences)), dtype = dtype, trainable = False)
+        
+        if self.LocErr_type == 'Identity':
+            def LocErr_function(LocErrs, LocErr_param):
+                return LocErrs
+        elif self.LocErr_type == 'Linear':
+            def LocErr_function(LocErrs, LocErr_param):
+                return LocErrs*LocErr_param
+        elif self.LocErr_type == 'Photon':
+            def LocErr_function(LocErrs, LocErr_param):
+                return LocErrs**0.5*LocErr_param
+        elif self.LocErr_type == 'Constant':
+            def LocErr_function(LocErrs, LocErr_param):
+                return LocErrs*0 + LocErr_param
+        else:
+            raise ValueError("Wrong LocErr_type, can be 'Identity', 'Linear', 'Photon' or 'Constant'.")
+        self.LocErr_function = LocErr_function
     
     def call(self, inputs, input_LocErrs, input_dts):
         '''
@@ -1112,6 +1146,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         vary_initial_params = self.vary_initial_params
         initial_fractions = tf.math.softmax(self.initial_fractions)
         vary_initial_fractions = self.vary_initial_fractions
+        LocErr_function = self.LocErr_function
         
         nb_dims = inputs.shape[-1]
         
@@ -1127,7 +1162,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         initial_param_vars = tf.concat((initial_param_vars, [initial_param_vars[-1]]), axis = 0)
         nb_states = nb_states + 1 
         
-        hidden_var_coefs, obs_var_coefs, Gaussian_stds, biases, initial_hidden_var_coefs, initial_obs_var_coefs, initial_Gaussian_stds, initial_biases, transition_hidden_var_coefs, transition_Gaussian_stds, transition_biases, integration_variable_index, Log_factors, initial_Log_factors, transition_Log_factors = constraint_function(param_vars, initial_param_vars, input_LocErrs, input_dts, nb_dims, reference_dt, dtype)
+        hidden_var_coefs, obs_var_coefs, Gaussian_stds, biases, initial_hidden_var_coefs, initial_obs_var_coefs, initial_Gaussian_stds, initial_biases, transition_hidden_var_coefs, transition_Gaussian_stds, transition_biases, integration_variable_index, Log_factors, initial_Log_factors, transition_Log_factors = constraint_function(param_vars, initial_param_vars, input_LocErrs, input_dts, nb_dims, reference_dt, LocErr_function, dtype)
         
         hidden_var_coefs = hidden_var_coefs/Gaussian_stds
         obs_var_coefs = obs_var_coefs/Gaussian_stds
@@ -1217,9 +1252,11 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
 
 
 @tf.function
-def constraint_function(all_params, all_initial_params, LocErr, dts,
-                        nb_dims, reference_dt, dtype):
+def constraint_function(all_params, all_initial_params, LocErrs, dts,
+                        nb_dims, reference_dt, LocErr_function, dtype):
     '''
+    
+    
     Vectorised, time-varying constraint function that makes the link between
     the model variables and the characteristic parameters of the Gaussians.
 
@@ -1302,6 +1339,11 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
 
     All coefficient tensors carry a leading time axis so callers slice
     `tensor[t]` at time step t.
+    
+    all_params = param_vars
+    all_initial_params = initial_param_vars
+    LocErrs = input_LocErrs
+    dts = input_dts
     '''
     
     # ------------------------------------------------------------------
@@ -1312,33 +1354,34 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     nb_hidden_vars             = 2
     nb_obs_vars                = 1
     nb_transition_gaussians    = 1          # = nb_hidden_vars - integration_variable_index
-
+    
     # ------------------------------------------------------------------
-    # Normalise LocErr and dts to shape (track_len, nb_tracks, 1)
+    # Normalise LocErrs and dts to shape (track_len, nb_tracks, 1)
     # ------------------------------------------------------------------
-    LocErr = tf.cast(LocErr, dtype)
-    if LocErr.shape.rank == 2:
-        LocErr = LocErr[..., None]                            # (nb_tracks, track_len, 1)
-    LocErr = tf.reduce_mean(LocErr, axis=-1, keepdims=True)   # (nb_tracks, track_len, 1)
-    LocErr = tf.transpose(LocErr, [1, 0, 2])                  # (track_len, nb_tracks, 1)
-
+    LocErrs = tf.cast(LocErrs, dtype)
+    if LocErrs.shape.rank == 2:
+        LocErrs = LocErrs[..., None]                            # (nb_tracks, track_len, 1)
+    LocErrs = tf.reduce_mean(LocErrs, axis=-1, keepdims=True)   # (nb_tracks, track_len, 1)
+    LocErrs = tf.transpose(LocErrs, [1, 0, 2])                  # (track_len, nb_tracks, 1)
+    
     dts = tf.cast(dts, dtype)
     if dts.shape.rank == 2:
         dts = dts[..., None]                                  # (nb_tracks, track_len, 1)
     dts = tf.reduce_mean(dts, axis=-1, keepdims=True)         # (nb_tracks, track_len, 1)
     dts = tf.transpose(dts, [1, 0, 2])                        # (track_len, nb_tracks, 1)
     
-    dts.shape
-        
     reference_dt = tf.cast(reference_dt, dtype)
-
+    
     # Dynamic shape helpers
-    track_len = tf.shape(LocErr)[0]
-    nb_tracks = tf.shape(LocErr)[1]
-
+    track_len = tf.shape(LocErrs)[0]
+    nb_tracks = tf.shape(LocErrs)[1]
+    
     # ------------------------------------------------------------------
     # Per-state parameters, broadcast-ready on (1, 1, nb_states)
     # ------------------------------------------------------------------
+    LocErr_param    = tf.math.exp(all_params[:, 0][None, None, :])
+    LocErrs = LocErr_function(LocErrs, LocErr_param)
+    
     log_d           = all_params[:, 1][None, None, :]
     ano             = all_params[:, 2][None, None, :]
     log_q           = all_params[:, 3][None, None, :]
@@ -1393,8 +1436,8 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     initial_position_spread = tf.broadcast_to(tf.exp(log_init_spread),
                                               tf.shape(d[0]))
     
-    # LocErr broadcast across states
-    LocErr_b = tf.broadcast_to(LocErr, (track_len, nb_tracks, nb_states)) + 1e-20  # (track_len, nb_tracks, nb_states)
+    # LocErrs broadcast across states
+    LocErr_b = tf.broadcast_to(LocErrs, (track_len, nb_tracks, nb_states)) + 1e-20  # (track_len, nb_tracks, nb_states)
     
     zeros = tf.zeros_like(LocErr_b)
     tiny  = tf.fill((track_len, nb_tracks, nb_states), tf.constant(1e-15, dtype=dtype))
@@ -1407,7 +1450,7 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     # Last axis ordering: [pos_t, ano_t, pos_{t+1}, ano_{t+1}]
     # ==================================================================
 
-    # Gaussian 0 -- localisation error:   [1/LocErr, 0, 0, 0]
+    # Gaussian 0 -- localisation error:   [1/LocErrs, 0, 0, 0]
     g0 = tf.stack([1.0 / LocErr_b, zeros, zeros, zeros], axis=-1)
 
     # Gaussian 1 -- diffusion + anomalous drift
@@ -1441,7 +1484,7 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
     # ==================================================================
     # Recurrent observation coefficients
     # Final shape: (track_len, 3, nb_tracks, nb_states, 1)
-    # Only Gaussian 0 depends on the observation: [-1/LocErr, 0, 0]
+    # Only Gaussian 0 depends on the observation: [-1/LocErrs, 0, 0]
     # ==================================================================
     obs_g0   = (-1.0 / LocErr_b)[..., None]                  # (track_len, nb_tracks, nb_states, 1)
     obs_zero = zeros[..., None]
@@ -1485,7 +1528,7 @@ def constraint_function(all_params, all_initial_params, LocErr, dts,
          nb_tracks, nb_states, nb_dims), dtype=dtype)
     
     # Then, we compute the time and localization error varying scaling factors    
-    Log_factors = - tf.math.log(LocErr + 1e-20) - tf.math.log(g1_std) - tf.math.log(q)
+    Log_factors = - tf.math.log(LocErrs + 1e-20) - tf.math.log(g1_std) - tf.math.log(q)
         
     #initial_anomalous_factor = (- param_vars[:,1] + 0.5*tf.math.log(2*tf.math.sigmoid(param_vars[:,2])))*(1.-state_mask) - param_vars[:,2]*state_mask
     initial_anomalous_factor = (- tf.math.log(d) + 0.5*tf.math.log(2*(1-tf.math.exp(-2*l_c))+1e-20))*isconf_mask - tf.math.log(v)*isdir_mask
@@ -2653,8 +2696,10 @@ def get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_
     '''
     nb_dims = 1
     LocErrs = np.ones((1,1))
+    def LocErr_function(LocErrs, LocErr_param):
+        return LocErrs
     dts = np.ones((1,2))
-    hidden_var_coefs, _, _, _, initial_hidden_var_coefs, _, _, _,  transition_hidden_var_coefs, _, _, integration_variable_index, _, _, _ = constraint_function(params, initial_params, LocErrs, dts, nb_dims, 1., dtype)
+    hidden_var_coefs, _, _, _, initial_hidden_var_coefs, _, _, _,  transition_hidden_var_coefs, _, _, integration_variable_index, _, _, _ = constraint_function(params, initial_params, LocErrs, dts, nb_dims, 1., LocErr_function, dtype)
     hidden_var_coefs = hidden_var_coefs[0]
     transition_hidden_var_coefs = transition_hidden_var_coefs[0]
     
@@ -3088,7 +3133,9 @@ def build_segment_model(track_len, # maximum number of time points in the input 
                 vary_initial_params = None,
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
-                vary_transition_rates = None):
+                vary_transition_rates = None, 
+                nb_LocErr_dims = 1,
+                LocErr_type = 'Photon'):
     
     # Defining the hyperparameters of the model    
     nb_obs_vars = 1 # number of dependend variables (the x, y, z dimension do not account as dependent variables in our model so keep this to 1)
@@ -3097,7 +3144,10 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     nb_gaussians = nb_obs_vars + nb_hidden_vars
     
     inputs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'tracks', dtype = dtype)
-    input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'Localization errors', dtype = dtype)
+    if nb_LocErr_dims>0:
+        input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_LocErr_dims), name = 'Localization errors', dtype = dtype)
+    else:
+        input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len), name = 'Localization errors', dtype = dtype)
     input_dts = tf.keras.Input(batch_shape=(batch_size, track_len+1), name = 'frame durations', dtype = dtype)
     input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), name = 'masks', dtype = dtype)
     input_isfirst = tf.keras.Input(batch_shape = (batch_size,), name = 'isfirsts', dtype = dtype)
@@ -3109,7 +3159,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
         min_segment_length=4,
         cutoff_batch_treshhold=0.5)
     
-    all_inputs, outputs = seq[1]
+    all_inputs, outputs = seq[0]
     inputs = all_inputs[0]
     input_LocErrs = all_inputs[1]
     input_dts = all_inputs[2]
@@ -3141,6 +3191,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
                                            vary_initial_fractions = vary_initial_fractions,
                                            sequence_length = sequence_length,
                                            carryover = True,
+                                           LocErr_type = LocErr_type,
                                            dtype = dtype)
     
     #self = Init_layer
@@ -3220,7 +3271,8 @@ def build_model(track_len, # maximum number of time points in the input tracks
                 vary_initial_params = None,
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
-                vary_transition_rates = None):
+                vary_transition_rates = None,
+                LocErr_type = 'Photon'):
     
     # Defining the hyperparameters of the model
     dtype = 'float64'
@@ -3229,7 +3281,7 @@ def build_model(track_len, # maximum number of time points in the input tracks
     nb_independent_vars = nb_dims # This accounts for variables that are independ and which follow the same relationships (e.g. the spatial dimensions in tracking). 
     nb_hidden_vars = 2
     nb_gaussians = nb_obs_vars + nb_hidden_vars
-
+    
     inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
     input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'Localization errors', dtype = dtype)
     input_dts = tf.keras.Input(batch_shape=(batch_size, track_len+1), name = 'frame durations', dtype = dtype)
@@ -3254,6 +3306,7 @@ def build_model(track_len, # maximum number of time points in the input tracks
                                            vary_initial_params = vary_initial_params,
                                            vary_initial_fractions = vary_initial_fractions,
                                            sequence_length = sequence_length,
+                                           LocErr_type = LocErr_type,
                                            dtype = dtype)
     
     tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
@@ -3422,6 +3475,7 @@ class WarmupLearningRateSchedule(LearningRateSchedule):
 def logit(x):
     return -np.log(1/x-1)
 
+
 def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=20, min_segment_length=4, cutoff_batch_treshhold = 0.5, shuffle = False):
     """
     Split long tracks into shorter segments and output a batch of tracks, mask, and 
@@ -3465,7 +3519,11 @@ def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=
     max_track_length = np.max([len(track) for track in track_list])
     max_nb_batches = (len(track_list) // batch_size + 1) * (max_track_length // segment_length + 1)*2
     track_batches = np.zeros((max_nb_batches, batch_size, segment_length, track_list[0].shape[1]))
-    LocErr_batches = np.zeros((max_nb_batches, batch_size, segment_length, LocErr_list[0].shape[1]))
+    if len(LocErr_list[0].shape)==2:
+        LocErr_batches = np.zeros((max_nb_batches, batch_size, segment_length, LocErr_list[0].shape[1]))
+    elif len(LocErr_list[0].shape)==1:
+        LocErr_batches = np.zeros((max_nb_batches, batch_size, segment_length))
+
     mean_dt = np.mean(np.concatenate(dt_list))
     dt_batches = np.zeros((max_nb_batches, batch_size, segment_length+1)) + mean_dt
     mask_batches = np.zeros((max_nb_batches, batch_size, segment_length))
@@ -3545,20 +3603,40 @@ class TrackSegmentSequence(tf.keras.utils.Sequence):
         """
         Parameters
         ----------
-        track_list, batch_size, segment_length, min_segment_length,
-        cutoff_batch_treshhold : forwarded to segment_tracks.
+        track_list: List of numpy arrays of shape (number of time points, number of dimensions)
+                    The number of time points can vary but not the number od dimensions.
+        LocErr_list: List of localization errors corresponding to the localizations in track_list.
+                     Can also be set to None to assume a single localization error (per state) 
+                     shared across tracks. Each element must have the shape (number of time points)
+        dt_list:     List of durations between frames corresponding to the localizations in track_list.
+                     For a given track, dt_list[i] must equal time[i+1] - time[i]. A last element with
+                     value reference_dt must be provided.
+                     Can also be set to None to assume a dt shared across tracks and time points.
+                     Each element of dt_list must have the shape (number of time points).
+                     
+        batch_size: (int) Batch size of the model.
+        segment_length: (int) length of the track segments (number of time-steps per batch of the model).
+        min_segment_length: (int) minimal segment length that we consider.
+        cutoff_batch_treshhold : Cutoff to know which fraction of the non-full batches we keep.
+                                 if 0 we remove all the non-full batches (which might be problematic),
+                                 and if 1 we keep all the non-full batches.
         dummy_label_shape : tuple or None
             Per-sample label shape *after* the batch_size dimension.
             If None, defaults to a scalar zero per sample, i.e. shape (batch_size,).
         """
         self.track_list = track_list
+        if LocErr_list is None:
+            LocErr_list = [np.ones(len(track)) for track in track_list]
+        if dt_list is None:
+            dt_list = [np.ones(len(track)) for track in track_list]
+                    
         self.LocErr_list = LocErr_list
         self.dt_list = dt_list
         self.segment_length = segment_length
         self.min_segment_length = min_segment_length
         self.cutoff_batch_treshhold = cutoff_batch_treshhold
         self.shuffle = shuffle
-        
+
         self.tracks, self.LocErrs, self.dts, self.masks, self.isfirsts = segment_tracks(
             track_list, LocErr_list, dt_list, batch_size, segment_length,
             min_segment_length, cutoff_batch_treshhold)
