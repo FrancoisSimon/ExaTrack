@@ -14,13 +14,18 @@ import random
 # Import the ExaTrack module (ensure exatrack.py is in your path)
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    rootdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+except:
+    # add the absolute path if you are running the script line by line
+    rootdir = r"C:\Users\Franc\Data\GitHub\ExaTrack"
+sys.path.insert(0, rootdir)
 import exatrack_while_segment_infer_vars as exatrack
 #import exatrack as exatrack
 from glob import glob
 
-track_len = 100
-nb_tracks = 200
+track_len = 20
+nb_tracks = 2000
 dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
@@ -70,8 +75,6 @@ initial_fractions = np.array([[0]*nb_states+[-5.0]], dtype='float64')
 
 # Transition matrices
 transition_rates = 4 * np.eye(nb_states, dtype='float64')
-transition_rates[0,0] = 5
-transition_rates[1,1] = 3
 '''
 transition_rates[0,1] = -5
 transition_rates[1,0] = -7
@@ -96,9 +99,9 @@ device = '/GPU:0'
 
 estimated_density = 0.00001 # Negligible density
 nb_dims = 2
-sequence_length = 10
+sequence_length = 5
 max_linking_distance = 1
-segment_length = 10
+segment_length = 20
 
 model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
