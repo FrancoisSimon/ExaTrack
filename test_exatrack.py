@@ -31,7 +31,7 @@ import exatrack
 from glob import glob
 
 track_len = 100
-nb_tracks = 500
+nb_tracks = 1000
 reference_dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
@@ -62,7 +62,7 @@ tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_tr
     LocErr_std = 0.004,
     field_of_view=np.array([-1, 1]),
     dt=dt,
-    dt_std = 0.01,
+    dt_std = 0.005,
     nb_sub_steps=10,  # Sub-steps for accurate simulation
     nb_burning_steps=0,
     bleaching_rate = 0.02)
@@ -80,14 +80,14 @@ for i in range(nb_rows):
         plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
         plt.scatter(track[:,0], track[:,1] , c = cm.jet(np.linspace(0,1,len(track))), s = 8, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
-i=1
+
 track_list = [tracks[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 # LocErr_list and dt_list can be set to None if they are assumed to be constant
 LocErr_list = [all_LocErrs[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 # LocErr_list = None 
 dt_list = [all_dts[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 
-batch_size = 20
+batch_size = 50
 
 # Prepare parameters for a 4 states model
 
@@ -146,12 +146,13 @@ seq = exatrack.TrackSegmentSequence(track_list,
 nb_batches = len(seq)
 
 #all_masks = masks
-learning_rate = 0.005
+learning_rate = 0.01
 nb_batches
-epochs = 60
-epoch_decay = 50
+epochs = 100
+epoch_decay = 80
 decay_threshold = epoch_decay*nb_batches
 decay_rate = 0.005
+verbose = 1
 
 model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model

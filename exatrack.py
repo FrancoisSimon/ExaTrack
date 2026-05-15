@@ -3103,7 +3103,7 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs,e
     new_transition_rates[0,0]
     return new_transition_shapes, new_transition_rates
 
-def get_model_raw_params(model, track_segmentation = False, return_dict = False):
+def get_model_raw_params(model, track_segmentation = True, return_dict = False):
     '''
     Function to get the raw (log-space) parameters from the model
     '''
@@ -3122,7 +3122,6 @@ def get_model_raw_params(model, track_segmentation = False, return_dict = False)
         return {'params': params, 'initial_params':initial_params, 'initial_fractions': initial_fractions, 'transition_shapes':transition_shapes, 'transition_rates': transition_rates}
     else:
         return params, initial_params, initial_fractions, transition_shapes, transition_rates
-
 
 def build_segment_model(track_len, # maximum number of time points in the input tracks 
                 nb_states, # Number of states of their model
@@ -3212,8 +3211,6 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     isdir = Init_layer.param_vars[:, 4]
     
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
-    Prev_coefs.shape
-    
     
     first_mask_layer = IsfirstMaskLayer(dtype = dtype)
     Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
@@ -3955,12 +3952,12 @@ def Model_finder(track_list,
                  LocErr_list = None,
                  dt_list = None,
                  segment_length = 10,
-                 learning_rate = 1/30,
+                 learning_rate = 1/500,
                  decay_threshold = 500,
                  decay_rate = 0.01,
                  device = '/GPU:0', 
-                 shuffle = True, 
                  verbose = 1,       
+                 shuffle = False,
                  vary_params = None,
                  vary_initial_params = None,
                  vary_initial_fractions = None,
@@ -3990,8 +3987,10 @@ def Model_finder(track_list,
                                batch_size=batch_size,
                                segment_length=segment_length,
                                min_segment_length=4,
-                               cutoff_batch_treshhold=0.5)
+                               cutoff_batch_treshhold=0.5,
+                               shuffle = shuffle)
     
+    nb_batches = len(seq)
     nb_dims = track_list[0].shape[-1]
     initial_anomalous_factors = params[:, 2]
     
@@ -4016,19 +4015,23 @@ def Model_finder(track_list,
                     nb_LocErr_dims = nb_LocErr_dims,
                     LocErr_type = LocErr_type)
     
-    lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
+    beta_1 = max(1 - 5/nb_batches, 0.8)
+    beta_2 = 1 - 0.1/nb_batches
+    learning_rate = 0.01
+    lr = WarmupLearningRateSchedule(20, learning_rate, decay_rate, decay_threshold) # learning rate schedule
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, clipvalue=0.01) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
     model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
     callbacks = [get_parameters(track_segmentation = True)]
-    
-    preds = model.predict(seq)
-    MLE_loss(preds, preds)    
+    decay_threshold//230
+    #preds = model.predict(seq)
+    #MLE_loss(preds, preds)    
     
     with tf.device(device):
-        history = model.fit(seq, epochs = epochs, callbacks = callbacks, shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
+        history = model.fit(seq, epochs = epochs, callbacks = callbacks, shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
     
     All_models = {}
-    params, initial_params, initial_fractions, _, transition_rates, transition_shapes = model.get_weights()
+    params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_raw_params(model, track_segmentation = True)
+
     LogLikelihood = - history.history['loss'][-1]
     loss_history = history.history['loss']
     
@@ -4050,13 +4053,14 @@ def Model_finder(track_list,
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
         model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
         with tf.device(device):
-            history = model.fit(seq, epochs = epochs, callbacks=callbacks, shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
+            history = model.fit(seq, epochs = epochs, callbacks=callbacks, shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
         
-        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_raw_params(model)
+        params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_raw_params(model, track_segmentation = True)
+        
         LogLikelihood = - history.history['loss'][-1]
         loss_history = history.history['loss']
         model_ID = len(All_models)
-        All_models['Model %s'%model_ID] = {'params': params.numpy(), 'initial_params': initial_params.numpy(), 'initial_fractions': initial_fractions.numpy(), 'transition_shapes': transition_shapes.numpy(), 'transition_rates': transition_rates.numpy(), 'LogLikelihood': LogLikelihood, 'loss_history': loss_history}
+        All_models['Model %s'%model_ID] = {'params': params, 'initial_params': initial_params, 'initial_fractions': initial_fractions, 'transition_shapes': transition_shapes, 'transition_rates': transition_rates, 'LogLikelihood': LogLikelihood, 'loss_history': loss_history}
         
         print('Log Likelihood', LogLikelihood)
         print('params', params)
@@ -4506,7 +4510,7 @@ def get_number_of_states(track_list,
             lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_step)
             cur_epochs = epochs
         
-        beta_1 = max(1 - 5/batch_size, 0.8)
+        beta_1 = max(1 - 5/nb_batches, 0.8)
         beta_2 = 1 - 0.2/nb_batches
         adam = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=beta_1, beta_2=beta_2, clipvalue=1.0)
         model.compile(loss=MLE_loss, optimizer=adam, jit_compile=False)
