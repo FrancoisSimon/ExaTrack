@@ -156,8 +156,9 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
                               dt_std=0.002,                               # Standard deviation of the time steps, can be set to 0 for constant time steps
                               field_of_view=np.array([10, 10]),           # Size of the field of view
                               nb_burning_steps=100,                       # Number of steps used before actually simulating the tracks to better simulate lifetimes and equilibrium fractions
-                              nb_sub_steps=10):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
-
+                              nb_sub_steps=10,
+                              return_list = False):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
+    
     nb_states = len(velocities)
     if not np.all(np.array([len(Fs), len(Ds), len(velocities), len(angular_Ds),
                             len(conf_forces), len(conf_Ds), len(conf_dists),
@@ -165,25 +166,25 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
         raise ValueError('Fs, Ds, velocities, angular_Ds, conf_forces, conf_Ds, '
                          'conf_dists and transition_matrix must all be arrays of '
                          'the same length (one element per state)')
-
+    
     cum_Fs = np.zeros(nb_states)
     cum_Fs[0] = Fs[0]
     for s in range(1, nb_states):
         cum_Fs[s] = cum_Fs[s - 1] + Fs[s]
-
+    
     # NOTE: the precomputed CPD_transition_mat is no longer needed. With variable
     # time steps, sub-step durations are not constant, so transition lifetimes
     # are now sampled in continuous time and converted to sub-step indices via
     # the cumulative sub-step time array `cum_sub_times` (built per track below).
-
+    
     all_tracks   = np.zeros((nb_tracks, max_track_len, nb_dims))
     all_states   = np.zeros((nb_tracks, max_track_len))
     all_masks    = np.zeros((nb_tracks, max_track_len))
     all_LocErrs  = np.zeros((nb_tracks, max_track_len, nb_dims))
     all_dts      = np.zeros((nb_tracks, max_track_len))
-
+    
     LocErr = np.array([LocErr])
-
+    
     for k in range(nb_tracks):
         # ---- Track length (bleaching) ----
         if bleaching_rate / nb_sub_steps > 1e-8:
@@ -199,10 +200,9 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
             #dts[:] = dts[0]
             dts[dts<0.05*dt] = 0.05*dt
             dts[dts>3*dt] = 3*dt
-
         else:
             dts = np.full(track_len, dt)
-
+        
         # ---- Cumulative sub-step times (the new state-clock) ----
         # Each sub-step within real time-step `i` has duration dts[i]/nb_sub_steps.
         # The burn-in does not simulate positions, so we use the mean dt there;
@@ -214,21 +214,20 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
         cum_sub_times = np.concatenate([[0.0], np.cumsum(all_sub_dts)])
         # cum_sub_times[i] = time at the *start* of sub-step i.
         # Length = burn_in_subs_total + track_len * nb_sub_steps + 1.
-
+        
         # ---- Initial position and state ----
         initial_positions = np.random.rand(nb_dims) * field_of_view
         track = []
         states = []
         next_state = np.argmin(np.random.rand() > cum_Fs)
-
+        
         # ---- Burn-in: randomise the initial state ----
         n = 0
         while n <= burn_in_subs_total:
             state = next_state
             transitions = _sample_transitions(
                 state, n, cum_sub_times, shape_matrix,
-                transition_matrix, nb_states, dt,
-            )
+                transition_matrix, nb_states, dt)
             next_state = np.argmin(transitions)
             n += int(np.min(transitions))
         # Override the chosen transition's count with the residual that spills
@@ -250,16 +249,14 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
             if len(track) > 0:
                 transitions = _sample_transitions(
                     state, burn_in_subs_total + len(track), cum_sub_times,
-                    shape_matrix, transition_matrix, nb_states, dt,
-                )
+                    shape_matrix, transition_matrix, nb_states, dt)
         
             l = min(int(np.min(transitions)), track_len_subs - len(track))
         
             D, velocity, angular_D, conf_force, conf_D, conf_dist = (
                 Ds[state], velocities[state], angular_Ds[state],
-                conf_forces[state], conf_Ds[state], conf_dists[state]
-            )
-        
+                conf_forces[state], conf_Ds[state], conf_dists[state])
+            
             # Per-sub-step vectors covering the entire state segment of length `l`.
             # The state is constant across the segment, so velocity/conf_force are
             # uniform; dt varies because consecutive sub-steps may belong to
@@ -270,7 +267,7 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
             sub_dts_seg     = dts[ts_indices] / nb_sub_steps
             velocity_seg    = np.full(l, velocity   / nb_sub_steps)
             conf_force_seg  = np.full(l, conf_force / nb_sub_steps)
-        
+            
             if nb_dims < 3:
                 segment = anomalous_diff_2D(track_len=l + 1,
                                             LocErr=0,
@@ -2051,11 +2048,11 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         # where S already includes the appended mislinking row/column.
         # ------------------------------------------------------------------
         dts_TN = tf.transpose(input_dts, [1, 0])                  # (T, N)
-        
+        # dts = dts_TN
         transition_shapes_full, transition_rates_full = self.transition_param_function(
                 transition_shapes, transition_rates, density,
                 Fs, effective_ds, dts_TN, reference_dt, dtype)
-        
+        transition_rates_full[0,0]
         # ------------------------------------------------------------------
         # Dense one-hot operators that "flatten" the (S, S) state-pair axis
         # into the unrolled n_pairs = sequence_length * S**2 axis used by
@@ -2118,15 +2115,14 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         gamma_dist_var  = transition_var_full[0]                    # (N, P)
         
         if self.carryover:
-            segment_len     = (isfirst[:, None] * segment_len
-                               + (1 - isfirst[:, None])
-                                  * self.carryout_segment_len)
-            gamma_dist_mean = (isfirst[:, None] * gamma_dist_mean
-                               + (1 - isfirst[:, None])
-                                  * self.carryout_gamma_dist_mean)
-            gamma_dist_var  = (isfirst[:, None] * gamma_dist_var
-                               + (1 - isfirst[:, None])
-                                  * self.carryout_gamma_dist_var)
+            br_isfirst_1 = tf.broadcast_to(isfirst[:, None], segment_len.shape)
+            segment_len     = (br_isfirst_1 * segment_len
+                               + (1 - br_isfirst_1) * self.carryout_segment_len)
+            br_isfirst_2 = tf.broadcast_to(isfirst[:, None], gamma_dist_mean.shape)
+            gamma_dist_mean = (br_isfirst_2 * gamma_dist_mean
+                               + (1 - br_isfirst_2) * self.carryout_gamma_dist_mean)
+            gamma_dist_var  = (br_isfirst_2 * gamma_dist_var
+                               + (1 - br_isfirst_2) * self.carryout_gamma_dist_var)
         
         # ------------------------------------------------------------------
         # State-tracking tensor for online state predictions.
@@ -2383,7 +2379,7 @@ def extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims, sequence_l
     
     # Estimate the mixture variance = E[Var] + Var[E]
     return pos_mean, anomalous_mean, position_std, anomalous_std
-
+"""
 def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model, batch_size, sequence_length, motion_types):
     '''
     tracks = tf_tracks
@@ -2401,8 +2397,10 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model, bat
     if the state i is directed or 0 if the state i is confined.
     '''
     motion_types = np.array(motion_types)
+    is_first = np.ones(tracks.shape[0])
+    
     nb_dims = tracks.shape[-1]
-    preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict((tracks, LocErrs, dts, masks), batch_size = batch_size)
+    LPs, preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict((tracks, LocErrs, dts, masks, is_first), batch_size = batch_size)
     
     # transpose the shape and rate matrices for the hidden state inference on the reversed tracks
     pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
@@ -2410,7 +2408,7 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model, bat
     
     inverse_dts = np.concatenate((dts[:, -1:], dts[:, :-1]), axis = 1)[:, ::-1] # the last time step of dts is a dummy value that must not be used
     
-    preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict((tracks[:,:, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:,::-1]), batch_size = batch_size)
+    LPs, preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict((tracks[:, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:,::-1], is_first), batch_size = batch_size)
     
     # restore the model so subsequent calls behave normally
     pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
@@ -2449,7 +2447,7 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model, bat
     
     # The anomalous variable cannot be averaged along the state axis to avoid mixing velocity vector and potential well position which have different orders of magnitude
     return position_mean, position_std, anomalous_mean, anomalous_std, mean_preds
-
+"""
 def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
                                     batch_size, sequence_length, motion_types, reference_dt):
     '''
@@ -2478,32 +2476,34 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     version.  `anomalous_mean` / `anomalous_std` are now velocities (for
     directed states) and well-anchor positions (for confined states) — both
     dt-independent quantities.
+    dts=time_steps
     '''
     motion_types = np.array(motion_types)
     nb_dims = tracks.shape[-1]
-
+    is_first = np.ones(tracks.shape[0])
+    
     # ------------------------------------------------------------------
     # Forward pass
     # ------------------------------------------------------------------
-    preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict(
-        (tracks, LocErrs, dts, masks), batch_size=batch_size)
-
+    LPs, preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict(
+        (tracks, LocErrs, dts, masks, is_first), batch_size=batch_size)
+    
     # ------------------------------------------------------------------
     # Reverse pass — transpose the Gamma shape/rate matrices so that
     # transitions s -> s' in the original direction become s' -> s.
     # ------------------------------------------------------------------
     pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
     pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
-
+    
     # The last column of dts is a dummy (carryover slot) that must not be
     # used as a real step.  Putting it at position 0 of the reversed array
     # keeps every "real" dt aligned with the reversed observations.
     inverse_dts = np.concatenate((dts[:, -1:], dts[:, :-1]), axis=1)[:, ::-1]
-
-    preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict(
-        (tracks[:, :, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:, ::-1]),
+    
+    LPs, preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict(
+        (tracks[:, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:, ::-1], is_first),
         batch_size=batch_size)
-
+    
     # restore the model so subsequent calls behave normally
     pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
     pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
@@ -2518,7 +2518,7 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     pos_mean_2, anomalous_mean_2, position_std_2, anomalous_std_2 = \
         extract_hidden_variables(All_coefs_2, All_biases_2, All_LPs_2,
                                  nb_dims, sequence_length)
-
+    
     # ==================================================================
     # NEW: convert directed-state ano (= velocity * dt) to velocity.
     #
@@ -2533,7 +2533,7 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     isconf_state = 1.0 - isdir_state
     
     nb_time = anomalous_mean_1.shape[1]                      # = T - 1
-
+    
     fwd_dt = dts[:,         1:1+nb_time][:, :, None, None] # (N, T-1, 1, 1)
     rev_dt = inverse_dts[:, 1:1+nb_time][:, :, None, None] # (N, T-1, 1, 1)
     
@@ -2546,7 +2546,7 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     anomalous_mean_2 = anomalous_mean_2 * rev_scale
     anomalous_std_2  = anomalous_std_2  * rev_scale
     # ==================================================================
-
+    
     # ------------------------------------------------------------------
     # Align forward and reverse passes to the same time axis
     # ------------------------------------------------------------------
@@ -2562,12 +2562,18 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     motion_type_sign = (-1 * (motion_types == 1)
                         + 1 * (motion_types == 0))
     motion_type_sign = motion_type_sign[None, None, :, None]
-
+    
     anomalous_mean_1 = anomalous_mean_1[:, 1:]
     anomalous_std_1  = anomalous_std_1[:, 1:]
     anomalous_mean_2 = motion_type_sign * anomalous_mean_2[:, :0:-1]
     anomalous_std_2  = anomalous_std_2[:, :0:-1]
-
+    
+    '''
+    anomalous_mean_1[1, :, 0]
+    anomalous_mean_2[1, :, 0]
+    anomalous_std_1[0, 60]
+    anomalous_std_2[0, 60]
+    '''
     # ------------------------------------------------------------------
     # Precision-weighted fusion (smoothing)
     # ------------------------------------------------------------------
@@ -2575,15 +2581,17 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
         w1 = 1 / var1
         w2 = 1 / var2
         return (w1 * x1 + w2 * x2) / (w1 + w2)
-
+    
     position_mean = optimal_estimator(pos_mean_1, pos_mean_2, position_std_1**2, position_std_2**2)
     position_std  = (1 / (1 / position_std_1**2 + 1 / position_std_2**2))**0.5
-
+    
     anomalous_mean = optimal_estimator(anomalous_mean_1, anomalous_mean_2, anomalous_std_1**2, anomalous_std_2**2)
     anomalous_std  = (1 / (1 / anomalous_std_1**2 + 1 / anomalous_std_2**2))**0.5
-
+    
+    anomalous_mean[0,63]
+    
     mean_preds = (preds_1 + preds_2[:, ::-1]) / 2
-
+    
     # `anomalous_mean` is now:
     #   - velocity (dt-independent) for directed states
     #   - well-anchor position       for confined states
@@ -3135,7 +3143,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
                 vary_transition_shapes = None,
                 vary_transition_rates = None, 
                 nb_LocErr_dims = 1,
-                LocErr_type = 'Photon'):
+                LocErr_type = 'Linear'):
     
     # Defining the hyperparameters of the model    
     nb_obs_vars = 1 # number of dependend variables (the x, y, z dimension do not account as dependent variables in our model so keep this to 1)
@@ -3204,6 +3212,8 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     isdir = Init_layer.param_vars[:, 4]
     
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
+    Prev_coefs.shape
+    
     
     first_mask_layer = IsfirstMaskLayer(dtype = dtype)
     Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
@@ -3234,6 +3244,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     outputs, All_states = F_layer(states)
     
     outputs = carryover_layer(outputs, [Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var])
+    
     model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask, input_isfirst),
                            outputs=outputs, name="Diffusion_model")
     
@@ -3272,7 +3283,8 @@ def build_model(track_len, # maximum number of time points in the input tracks
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
                 vary_transition_rates = None,
-                LocErr_type = 'Photon'):
+                nb_LocErr_dims = 1,
+                LocErr_type = 'Linear'):
     
     # Defining the hyperparameters of the model
     dtype = 'float64'
@@ -3283,7 +3295,10 @@ def build_model(track_len, # maximum number of time points in the input tracks
     nb_gaussians = nb_obs_vars + nb_hidden_vars
     
     inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
-    input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'Localization errors', dtype = dtype)
+    if nb_LocErr_dims>0:
+        input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_LocErr_dims), name = 'Localization errors', dtype = dtype)
+    else:
+        input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len), name = 'Localization errors', dtype = dtype)
     input_dts = tf.keras.Input(batch_shape=(batch_size, track_len+1), name = 'frame durations', dtype = dtype)
     input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), dtype = dtype)
     
@@ -3344,7 +3359,7 @@ def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (Non
     return - tf.math.reduce_mean(pred) # sum over the spatial dimensions axis
 
 class get_parameters(tf.keras.callbacks.Callback):
-    def __init__(self, track_segmentation = False, layer_name='params'):
+    def __init__(self, track_segmentation = True, layer_name='params'):
         super(get_parameters, self).__init__()
         self.layer_name = layer_name
         self.track_segmentation = track_segmentation
@@ -3537,7 +3552,6 @@ def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=
     
     for track, LocErrs, dts in zip(track_list, LocErr_list, dt_list):
         
-        print(len(track))
         #track, LocErrs, dts = track_list[1], LocErr_list[1], dt_list[1]
         nb_segments = len(track)//segment_length
         if len(track)%segment_length > min_segment_length:
@@ -3572,32 +3586,256 @@ def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=
     isfirst_batches = isfirst_batches[:nb_batches]
     return track_batches, LocErr_batches, dt_batches, mask_batches, isfirst_batches
 
+"""
+Numba-accelerated version of the above segment_tracks function.
+
+Drop-in replacement for the original function: same signature, same outputs
+(verified against the original on random data).
+
+Key changes vs. the original:
+  * Variable-length lists are concatenated into flat float64 arrays + offsets
+    before entering the jitted core (Numba is much happier with flat arrays
+    than with reflected lists of ndarrays).
+  * The per-track `np.where(mask_batches[:, :, 0] == 0)[0]` scan is replaced
+    by an O(batch_size) "leftmost column with minimum next-empty-row" lookup
+    that produces the exact same placement order as the original C-order
+    np.where call.
+  * The hot inner loop (copy segment, pad with last value, write mask) is
+    compiled with @njit(cache=True).
+"""
+
+import numpy as np
+from numba import njit
+
+@njit(cache=True)
+def _segment_tracks_core(
+    tracks_flat,        # (total_len, nb_dims)        float64
+    locerrs_flat,       # (total_len, locerr_dims)    float64
+    dts_flat,           # (total_dt_len,)             float64
+    track_offsets,      # (nb_tracks + 1,)            int64  -- cumsum of track lengths
+    dt_offsets,         # (nb_tracks + 1,)            int64  -- cumsum of dt lengths
+    batch_size,
+    segment_length,
+    min_segment_length,
+    max_nb_batches,
+    mean_dt):
+    
+    nb_dims = tracks_flat.shape[1]
+    locerr_dims = locerrs_flat.shape[1]
+
+    track_batches   = np.zeros((max_nb_batches, batch_size, segment_length, nb_dims))
+    locerr_batches  = np.zeros((max_nb_batches, batch_size, segment_length, locerr_dims))
+    dt_batches      = np.full((max_nb_batches, batch_size, segment_length + 1), mean_dt)
+    mask_batches    = np.zeros((max_nb_batches, batch_size, segment_length))
+    isfirst_batches = np.ones((max_nb_batches, batch_size))
+
+    # next_row[c] = next empty row in column c.
+    # Picking the leftmost column with the minimum next_row reproduces the
+    # original "first empty cell in C-order" placement.
+    next_row = np.zeros(batch_size, dtype=np.int64)
+
+    nb_tracks = len(track_offsets) - 1
+
+    for t in range(nb_tracks):
+        track_start = track_offsets[t]
+        track_end   = track_offsets[t + 1]
+        track_len   = track_end - track_start
+
+        dt_start      = dt_offsets[t]
+        dt_track_len  = dt_offsets[t + 1] - dt_start
+
+        nb_segments = track_len // segment_length
+        if track_len % segment_length > min_segment_length:
+            nb_segments += 1
+        if nb_segments == 0:
+            continue
+
+        # Find leftmost column with min next_row (equivalent to original np.where).
+        min_row = next_row[0]
+        min_col = 0
+        for c in range(1, batch_size):
+            if next_row[c] < min_row:
+                min_row = next_row[c]
+                min_col = c
+
+        batch_ID = min_row
+        index_ID = min_col
+
+        for i in range(nb_segments):
+            # Slicing arithmetic copied verbatim from the original.
+            seg_start         = i * (segment_length - 1)
+            seg_end_unclipped = (i + 1) * segment_length - i
+
+            seg_end = seg_end_unclipped
+            if seg_end > track_len:
+                seg_end = track_len
+            seg_len = seg_end - seg_start
+            last_track_idx = track_start + seg_end - 1
+
+            row = batch_ID + i
+
+            # --- tracks: bulk copy then pad with last value ---
+            track_batches[row, index_ID, :seg_len] = \
+                tracks_flat[track_start + seg_start : track_start + seg_end]
+            for k in range(nb_dims):
+                pad_val = tracks_flat[last_track_idx, k]
+                for j in range(seg_len, segment_length):
+                    track_batches[row, index_ID, j, k] = pad_val
+
+            # --- localization errors: same pattern ---
+            locerr_batches[row, index_ID, :seg_len] = \
+                locerrs_flat[track_start + seg_start : track_start + seg_end]
+            for k in range(locerr_dims):
+                pad_val = locerrs_flat[last_track_idx, k]
+                for j in range(seg_len, segment_length):
+                    locerr_batches[row, index_ID, j, k] = pad_val
+
+            # --- dt: one extra time step, uses the *unclipped* end + 1 ---
+            dt_end = seg_end_unclipped + 1
+            if dt_end > dt_track_len:
+                dt_end = dt_track_len
+            dt_seg_len   = dt_end - seg_start
+            last_dt_idx  = dt_start + dt_end - 1
+
+            dt_batches[row, index_ID, :dt_seg_len] = \
+                dts_flat[dt_start + seg_start : dt_start + dt_end]
+            pad_val_dt = dts_flat[last_dt_idx]
+            for j in range(dt_seg_len, segment_length + 1):
+                dt_batches[row, index_ID, j] = pad_val_dt
+
+            # --- mask ---
+            for j in range(seg_len):
+                mask_batches[row, index_ID, j] = 1.0
+
+            if i != 0:
+                isfirst_batches[row, index_ID] = 0.0
+
+        next_row[index_ID] = batch_ID + nb_segments
+
+    return track_batches, locerr_batches, dt_batches, mask_batches, isfirst_batches
+
+def segment_tracks(
+    track_list,
+    LocErr_list,
+    dt_list,
+    batch_size,
+    segment_length=20,
+    min_segment_length=4,
+    cutoff_batch_treshhold=0.5,
+    shuffle=False):
+    """
+    Numba-accelerated version of segment_tracks.
+     
+    Drop-in replacement for the original function: same signature, same outputs
+    (verified against the original on random data).
+     
+    Key changes vs. the original:
+      * Variable-length lists are concatenated into flat float64 arrays + offsets
+        before entering the jitted core (Numba is much happier with flat arrays
+        than with reflected lists of ndarrays).
+      * The per-track `np.where(mask_batches[:, :, 0] == 0)[0]` scan is replaced
+        by an O(batch_size) "leftmost column with minimum next-empty-row" lookup
+        that produces the exact same placement order as the original C-order
+        np.where call.
+      * The hot inner loop (copy segment, pad with last value, write mask) is
+        compiled with @njit(cache=True).
+    """
+
+    # ---- clip cutoff (preserve original behavior) ----
+    if cutoff_batch_treshhold > 1:
+        cutoff_batch_treshhold = 1
+    elif cutoff_batch_treshhold < 1 / batch_size:
+        cutoff_batch_treshhold = 0.5 / batch_size
+    
+    if LocErr_list is None:
+        LocErr_list = [np.ones((len(track))) for track in track_list]
+    
+    nb_tracks = len(track_list)
+    nb_dims   = track_list[0].shape[1]
+    locerr_is_1d = (LocErr_list[0].ndim == 1)
+    locerr_dims  = 1 if locerr_is_1d else LocErr_list[0].shape[1]
+
+    # ---- optional shuffle (kept outside the jit to use numpy's RNG) ----
+    if shuffle:
+        perm = np.random.permutation(nb_tracks)
+        track_list  = [track_list[i]  for i in perm]
+        LocErr_list = [LocErr_list[i] for i in perm]
+        dt_list     = [dt_list[i]     for i in perm]
+
+    # ---- flatten variable-length lists into contiguous arrays + offsets ----
+    track_lens = np.fromiter((len(t) for t in track_list), dtype=np.int64, count=nb_tracks)
+    dt_lens    = np.fromiter((len(d) for d in dt_list),    dtype=np.int64, count=nb_tracks)
+    
+    track_offsets = np.empty(nb_tracks + 1, dtype=np.int64)
+    track_offsets[0] = 0
+    np.cumsum(track_lens, out=track_offsets[1:])
+
+    dt_offsets = np.empty(nb_tracks + 1, dtype=np.int64)
+    dt_offsets[0] = 0
+    np.cumsum(dt_lens, out=dt_offsets[1:])
+
+    total_track_len = int(track_offsets[-1])
+    total_dt_len    = int(dt_offsets[-1])
+
+    tracks_flat  = np.zeros((total_track_len, nb_dims),     dtype=np.float64) - 1
+    locerrs_flat = np.zeros((total_track_len, locerr_dims), dtype=np.float64)
+    dts_flat     = np.zeros(total_dt_len,                   dtype=np.float64)
+    
+    for i in range(nb_tracks):
+        s, e = int(track_offsets[i]), int(track_offsets[i + 1])
+        tracks_flat[s:e] = track_list[i]
+        if locerr_is_1d:
+            locerrs_flat[s:e, 0] = LocErr_list[i]
+        else:
+            locerrs_flat[s:e] = LocErr_list[i]
+        ds, de = int(dt_offsets[i]), int(dt_offsets[i + 1])
+        dts_flat[ds:de] = dt_list[i]
+    
+    mean_dt = float(dts_flat.mean()) if total_dt_len > 0 else 0.0
+    max_track_length = int(track_lens.max())
+    max_nb_batches = (nb_tracks // batch_size + 1) * (max_track_length // segment_length + 1) * 2
+    
+    # ---- jitted core ----
+    track_batches, locerr_batches, dt_batches, mask_batches, isfirst_batches = \
+        _segment_tracks_core(
+            tracks_flat, locerrs_flat, dts_flat,
+            track_offsets, dt_offsets,
+            int(batch_size), int(segment_length), int(min_segment_length),
+            int(max_nb_batches), mean_dt)
+    
+    # ---- trim trailing under-filled batches (same rule as original) ----
+    nb_batches = int(np.argmin(mask_batches[:, :, 0].mean(axis=1) >= cutoff_batch_treshhold))
+    
+    track_batches   = track_batches[:nb_batches]
+    locerr_batches  = locerr_batches[:nb_batches]
+    dt_batches      = dt_batches[:nb_batches]
+    mask_batches    = mask_batches[:nb_batches]
+    isfirst_batches = isfirst_batches[:nb_batches]
+    
+    # ---- restore 1D LocErr shape if input was 1D per track ----
+    if locerr_is_1d:
+        locerr_batches = locerr_batches[..., 0]
+    
+    return track_batches, locerr_batches, dt_batches, mask_batches, isfirst_batches
 
 '''
-def data_generator(track_list, batch_size, segment_length=20,
-                   min_segment_length=4, cutoff_batch_treshhold=0.5):
-    """
-    Non-lazy generator that yields pre-computed batches of
-    (tracks, masks, isfirsts) for a Keras model.
-    """
+lines to visually test if the segments are built well. 
+track_batches.shape
 
-    while True:
-        track_batches, mask_batches, isfirst_batches = segment_tracks(
-            track_list, batch_size, segment_length,
-            min_segment_length, cutoff_batch_treshhold)
-        
-        nb_batches = len(track_batches)
-        for i in range(nb_batches):
-            yield ({"tracks": track_batches[i],
-                    "masks": mask_batches[i],
-                    "isfirsts": isfirst_batches[i]},
-                   track_batches[i],  # replace with your actual targets
-            )
+for i in range(len(track_batches)):
+    track_batches[i, :, 0] = track_batches[i, :, 0] * (1-isfirst_batches[i, :, None])
+
+img = track_batches.transpose([0,2,1,3])
+img = np.concatenate(img)[:,:,1]
+
+plt.figure()
+plt.imshow(img[-200:, :])
 '''
+
 self = tf.keras.utils.Sequence()
 class TrackSegmentSequence(tf.keras.utils.Sequence):
     """Keras Sequence that pre-computes all batches from segment_tracks."""
-
+    
     def __init__(self, track_list, LocErr_list, dt_list, batch_size, segment_length=20,
                  min_segment_length=4, cutoff_batch_treshhold=0.5, shuffle = False):
         """
@@ -3701,10 +3939,11 @@ class CarryoverAssignLayer(tf.keras.layers.Layer):
         with tf.control_dependencies(assign_ops):
             return tf.identity(output)
 
-def Model_finder(tracks,
-                 masks,
+def Model_finder(track_list,
+                 reference_dt,
                  sequence_length,
-                 nb_states, params,
+                 nb_states, 
+                 params,
                  initial_params,  
                  initial_fractions, 
                  transition_shapes, 
@@ -3713,6 +3952,9 @@ def Model_finder(tracks,
                  estimated_density, 
                  epochs, 
                  batch_size,
+                 LocErr_list = None,
+                 dt_list = None,
+                 segment_length = 10,
                  learning_rate = 1/30,
                  decay_threshold = 500,
                  decay_rate = 0.01,
@@ -3724,39 +3966,66 @@ def Model_finder(tracks,
                  vary_initial_fractions = None,
                  vary_transition_shapes = None,
                  vary_transition_rates = None,
-                 track_segmentation = False):
+                 track_segmentation = False,
+                 LocErr_type = 'Linear'):
     '''
     If a state is not found immobile, we test the alternative state hypothesis
     '''
+    
     nb_states = params.shape[0]
-    track_len = masks.shape[1]
-    nb_dims = tracks.shape[-1]
+    if LocErr_list is None:
+        LocErr_list = [np.ones(len(track)) for track in track_list]
+        nb_LocErr_dims = 0
+    elif LocErr_list[0].ndim==2:
+        nb_LocErr_dims = LocErr_list[0].shape[1]
+    elif LocErr_list[0].ndim==1:
+        nb_LocErr_dims = 0
+
+    if dt_list is None:
+        dt_list = [np.ones(len(track)) for track in dt_list] 
+    
+    seq = TrackSegmentSequence(track_list, 
+                               LocErr_list,
+                               dt_list,
+                               batch_size=batch_size,
+                               segment_length=segment_length,
+                               min_segment_length=4,
+                               cutoff_batch_treshhold=0.5)
+    
+    nb_dims = track_list[0].shape[-1]
     initial_anomalous_factors = params[:, 2]
     
-    model, pred_model = build_model(track_len, # maximum number of time points in the input tracks 
+    model, pred_model = build_segment_model(segment_length, # maximum number of time points in the input tracks
                     nb_states, # Number of states of their model
                     params, # recurrent parameters of the model
                     initial_params, # initial parameters of the model
                     transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                     transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                    initial_fractions, # initial guess of the fractions (softmax)
+                    initial_fractions,
                     batch_size, # number of tracks analysed at the same time
+                    reference_dt,
                     nb_dims = nb_dims, # Number of dimensions of the tracks
                     sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
                     max_linking_distance = max_linking_distance, # Maximum linking distance or standard deviation for the expected misslinking distance.
-                    estimated_density = estimated_density, # Estimated density of the sample. 
+                    estimated_density = estimated_density, # Estimated density of the sample.
                     vary_params = vary_params,
                     vary_initial_params = vary_initial_params,
                     vary_initial_fractions = vary_initial_fractions,
                     vary_transition_shapes = vary_transition_shapes,
-                    vary_transition_rates = vary_transition_rates)
+                    vary_transition_rates = vary_transition_rates,
+                    nb_LocErr_dims = nb_LocErr_dims,
+                    LocErr_type = LocErr_type)
     
     lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
     model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
-    callbacks = [get_parameters(track_segmentation = track_segmentation)]
+    callbacks = [get_parameters(track_segmentation = True)]
+    
+    preds = model.predict(seq)
+    MLE_loss(preds, preds)    
+    
     with tf.device(device):
-        history = model.fit((tracks, masks), tracks, epochs = epochs, batch_size = batch_size, callbacks = callbacks, shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
+        history = model.fit(seq, epochs = epochs, callbacks = callbacks, shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
     
     All_models = {}
     params, initial_params, initial_fractions, _, transition_rates, transition_shapes = model.get_weights()
@@ -3771,20 +4040,17 @@ def Model_finder(tracks,
         model.weights[0].assign(params)
         model.weights[1].assign(initial_params)
         model.weights[2].assign(initial_fractions)
-        model.weights[4].assign(transition_rates)
-        model.weights[5].assign(transition_shapes)
+        model.weights[7].assign(transition_rates)
+        model.weights[8].assign(transition_shapes)
         
         model.weights[0][i, 4].assign(1 - model.weights[0][i, 4])
         model.weights[0][i, 2].assign(initial_anomalous_factors[i])
         
-        lr = WarmupLearningRateSchedule(10, 1/50, 0.01, 500) # learning rate schedule
+        lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
         model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
         with tf.device(device):
-            history = model.fit((tracks, masks), tracks, epochs = epochs, batch_size = batch_size, callbacks=callbacks, shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
-        model.weights
-        
-        list(np.round(tf.math.softmax(model.weights[2][0]), 3))
+            history = model.fit(seq, epochs = epochs, callbacks=callbacks, shuffle=shuffle, verbose = verbose) #, callbacks  = [l_callback])
         
         params, initial_params, initial_fractions, transition_shapes, transition_rates = get_model_raw_params(model)
         LogLikelihood = - history.history['loss'][-1]
@@ -3802,28 +4068,32 @@ def Model_finder(tracks,
     model.weights[0].assign(params)
     model.weights[1].assign(initial_params)
     model.weights[2].assign(initial_fractions)
-    model.weights[4].assign(transition_rates)
-    model.weights[5].assign(transition_shapes)
+    model.weights[7].assign(transition_rates)
+    model.weights[8].assign(transition_shapes)
     return model, pred_model
 
-def build_abrupt_directed_motion_changes_model(track_len, # maximum number of time points in the input tracks 
+
+
+def build_abrupt_directed_motion_changes_model(segment_length, # maximum number of time points in the input tracks 
                 nb_states, # Number of states of their model
-                all_params, # recurrent parameters of the model
-                all_initial_params, # initial parameters of the model
+                params, # recurrent parameters of the model
+                initial_params, # initial parameters of the model
                 transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
                 transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
                 initial_fractions, 
                 batch_size, # number of tracks analysed at the same time
+                reference_dt,
                 nb_dims = 2, # Number of dimensions of the tracks
                 sequence_length = 3, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
                 max_linking_distance = 3, # Maximum linking distance or standard deviation for the expected misslinking distance.
                 estimated_density = 0.001, # Estimated density of the sample.
-                abrupt_change_state = 2,
+                abrupt_change_state = 1,
                 vary_params = None,
                 vary_initial_params = None,
                 vary_initial_fractions = None,
                 vary_transition_shapes = None,
-                vary_transition_rates = None):
+                vary_transition_rates = None,
+                LocErr_type = 'Linear'):
     
     class Initial_layer_constraints_abrupt_change(Initial_layer_constraints):
         
@@ -3833,42 +4103,47 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
             '''
             param_vars = tf.concat((param_vars[:abrupt_change_state+1], param_vars[abrupt_change_state:]), 0)
             initial_param_vars = tf.concat((initial_param_vars[:abrupt_change_state+1], initial_param_vars[abrupt_change_state:]), 0)
-            initial_fractions = tf.concat((initial_fractions[:,:abrupt_change_state],[[1e-10]], initial_fractions[:,abrupt_change_state:]), 1)
+            initial_fractions = tf.concat((initial_fractions[:,:abrupt_change_state+1],[[1e-10]], initial_fractions[:,abrupt_change_state+1:]), 1)
             
             return param_vars, initial_param_vars, initial_fractions
-        
+    """
     @tf.function
-    def transition_param_function(transition_shapes, transition_rates, density, Fs, effective_ds, dtype):
+    def transition_param_function(transition_shapes, transition_rates, density, Fs, effective_ds, dts, reference_dt, dtype):
         '''
         The transition_param_function must define the initial transition parameters and their constraints
         similarly to how constraint_function defines the constraints of the states
+        
+        dts = dts_TN
         '''
     
         print('transition_shapes', transition_shapes)
         nb_states = transition_shapes.shape[0]
-        
-        abrupt_change_state = 0
+        nb_time_points, nb_tracks = dts.shape
         
         # We need to assign values to the transitions kinetics directed state 1 <=> directed state 2.
         # To do so, we can use the diagonal values of transition_shapes and transition_rates that are unused
         directed_directed_transition_shape = tf.math.exp(transition_shapes[abrupt_change_state, abrupt_change_state])
         directed_directed_transition_rate = tf.math.sigmoid(transition_rates[abrupt_change_state, abrupt_change_state]-2)
-        
+                
         transition_shapes = tf.math.exp(transition_shapes)
-        transition_rates = tf.math.softmax(transition_rates, axis = 1)*transition_shapes
+        transition_shapes = np.arange(1,10).reshape((3,3))
+        transition_rates = tf.math.softmax(transition_rates, axis = 1)*transition_shapes/reference_dt
+        transition_rates = transition_rates[None,None]*dts[..., None, None]+1e-20
         
         new_transition_shapes = tf.concat((transition_shapes, tf.constant([[1]*nb_states], dtype = dtype)), axis = 0)
         new_transition_shapes = tf.concat((new_transition_shapes, tf.constant([[1]]*(nb_states+1), dtype = dtype)), axis = 1)
         
         mislinking_dwell_time = tf.constant([0.9/nb_states]*nb_states, dtype = dtype) # We multiply by (1-tf.reduce_mean(additional_transition_params[:nb_states]) to allow several consecutive mislinkings proportionally to the misslinking probability
         mislinking_dwell_time = tf.concat((mislinking_dwell_time, [0.1]), axis = 0)
+        mislinking_dwell_time = tf.broadcast_to(mislinking_dwell_time[None,None,None], (nb_time_points, nb_tracks, 1, nb_states + 1))
         
         #mislinking_rates = tf.constant([0.078,0.146], dtype = dtype)[:, None] # density 1 -> rates 0.052 0.052 
         mislinking_rates = 1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None])# density 0.1 -> rates 0.052 0.052 
-    
-        new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 1)
-        new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time[None]), axis = 0)
+        mislinking_rates = tf.broadcast_to(mislinking_rates[None,None], (nb_time_points, nb_tracks, nb_states, 1))
         
+        new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 3)
+        new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time), axis = 2)
+
         '''
         Once the mislinking state is added we can add the additionnal directed state, constraining
         transitions into a directed state to occur only towards the first directed state duplicated state such that
@@ -3877,18 +4152,103 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
         states. the on rates of the 2nd directed state are 0 except from the 1st directed state and the off rates 
         of the 2 directed states are shared.    
         '''
-        abrupt_change_state
         
         second_directed_state_on_rates = tf.stack([1e-10]*abrupt_change_state + [directed_directed_transition_rate] + [1e-10]*(nb_states - abrupt_change_state))
-        new_new_transition_rates = tf.concat((new_transition_rates[:,:abrupt_change_state+1], second_directed_state_on_rates[:,None], new_transition_rates[:,abrupt_change_state+1:]), 1)
-        second_directed_state_off_rates = tf.concat([new_new_transition_rates[abrupt_change_state, :abrupt_change_state]] + [directed_directed_transition_rate[None]] + [new_new_transition_rates[abrupt_change_state, abrupt_change_state+1:]], axis = 0)
-        new_new_transition_rates = tf.concat((new_new_transition_rates[:abrupt_change_state+1], second_directed_state_off_rates[None], new_new_transition_rates[abrupt_change_state+1:]), 0)
+        second_directed_state_on_rates = tf.broadcast_to(second_directed_state_on_rates[None,None, :, None], (nb_time_points, nb_tracks, nb_states + 1, 1))
+        second_directed_state_on_rates = second_directed_state_on_rates * dts[:,:,None,None] / reference_dt
+        new_new_transition_rates = tf.concat((new_transition_rates[:,:,:,:abrupt_change_state+1], second_directed_state_on_rates, new_transition_rates[:,:,:,abrupt_change_state+1:]), 3)
+        
+        #new_new_transition_rates[:,:,abrupt_change_state, :abrupt_change_state].shape
+        br_directed_directed_transition_rate = tf.broadcast_to(directed_directed_transition_rate[None,None,None], (nb_time_points, nb_tracks, 1))
+        #new_new_transition_rates[:,:,abrupt_change_state, abrupt_change_state+1:].shape
+                
+        second_directed_state_off_rates = tf.concat([new_new_transition_rates[:,:,abrupt_change_state, :abrupt_change_state], br_directed_directed_transition_rate, new_new_transition_rates[:,:,abrupt_change_state, abrupt_change_state+1:]], axis =2)
+        new_new_transition_rates = tf.concat((new_new_transition_rates[:,:,:abrupt_change_state+1], second_directed_state_off_rates[:,:,None], new_new_transition_rates[:,:,abrupt_change_state+1:]), 2)
         
         second_directed_state_on_shapes = tf.stack([1]*abrupt_change_state + [directed_directed_transition_shape] + [1]*(nb_states - abrupt_change_state))
-        new_new_transition_shapes = tf.concat((new_transition_shapes[:,:abrupt_change_state+1], second_directed_state_on_shapes[:,None], new_transition_shapes[:,abrupt_change_state+1:]), 1)
-        second_directed_state_off_shapes = tf.concat([new_new_transition_shapes[abrupt_change_state, :abrupt_change_state]] + [directed_directed_transition_shape[None]] + [new_new_transition_shapes[abrupt_change_state, abrupt_change_state+1:]], axis = 0)
+        #second_directed_state_on_shapes = tf.broadcast_to(second_directed_state_on_shapes[None,None, :, None], (nb_time_points, nb_tracks, nb_states + 1, 1))
+            
+        
+        
+        #new_new_transition_shapes = tf.concat((new_transition_shapes[:,:,:,:abrupt_change_state+1], second_directed_state_on_shapes, new_transition_shapes[:,:,:,abrupt_change_state+1:]), 3)
+        new_new_transition_shapes = tf.concat((new_transition_shapes[:,:abrupt_change_state+1], second_directed_state_on_shapes[:, None], new_transition_shapes[:,abrupt_change_state+1:]), 1)
+        second_directed_state_off_shapes = tf.concat([new_new_transition_shapes[abrupt_change_state, :abrupt_change_state], directed_directed_transition_shape[None], new_new_transition_shapes[abrupt_change_state, abrupt_change_state+1:]], axis = 0)
         new_new_transition_shapes = tf.concat((new_new_transition_shapes[:abrupt_change_state+1], second_directed_state_off_shapes[None], new_new_transition_shapes[abrupt_change_state+1:]), 0)
             
+        return new_new_transition_shapes, new_new_transition_rates
+    """
+    
+    #@tf.function
+    def transition_param_function(transition_shapes, transition_rates, density, Fs, effective_ds, dts, reference_dt, dtype):
+        '''
+        The transition_param_function must define the initial transition parameters and their constraints
+        similarly to how constraint_function defines the constraints of the states
+        
+        dts = dts_TN
+        '''
+    
+        print('transition_shapes', transition_shapes)
+        nb_states = transition_shapes.shape[0]
+        nb_time_points, nb_tracks = dts.shape
+        
+        # We need to assign values to the transitions kinetics directed state 1 <=> directed state 2.
+        # To do so, we can use the diagonal values of transition_shapes and transition_rates that are unused
+        directed_directed_transition_shape = tf.math.exp(transition_shapes[abrupt_change_state, abrupt_change_state])
+        directed_directed_transition_rate = transition_rates[abrupt_change_state, abrupt_change_state]-4
+        
+        transition_shapes = tf.math.exp(transition_shapes)
+        #transition_shapes = tf.math.exp(transition_shapes) + np.arange(1,10).reshape((3,3))
+        #transition_rates = tf.math.softmax(transition_rates, axis = 1)*transition_shapes/reference_dt
+        transition_rates = transition_rates #*dts[..., None, None]+1e-20
+        
+        new_transition_shapes = tf.concat((transition_shapes, tf.constant([[1]*nb_states], dtype = dtype)), axis = 0)
+        new_transition_shapes = tf.concat((new_transition_shapes, tf.constant([[1]]*(nb_states+1), dtype = dtype)), axis = 1)
+        
+        mislinking_dwell_time = tf.constant([0.9/nb_states]*nb_states, dtype = dtype) # We multiply by (1-tf.reduce_mean(additional_transition_params[:nb_states]) to allow several consecutive mislinkings proportionally to the misslinking probability
+        mislinking_dwell_time = tf.concat((mislinking_dwell_time, [0.1]), axis = 0)[None]
+        #mislinking_dwell_time = tf.broadcast_to(mislinking_dwell_time[None,None,None], (nb_time_points, nb_tracks, 1, nb_states + 1))
+        
+        #mislinking_rates = tf.constant([0.078,0.146], dtype = dtype)[:, None] # density 1 -> rates 0.052 0.052 
+        mislinking_rates = tf.math.log(1-tf.math.exp(-0.5*density *tf.reduce_sum(Fs[None]*(effective_ds[:,None]**2 + effective_ds[None]**2)**0.5, axis = 0)[:, None]))# density 0.1 -> rates 0.052 0.052 
+        #mislinking_rates = tf.broadcast_to(mislinking_rates[None,None], (nb_time_points, nb_tracks, nb_states, 1))
+        
+        new_transition_rates = tf.concat((transition_rates, mislinking_rates), axis = 1)
+        new_transition_rates = tf.concat((new_transition_rates, mislinking_dwell_time), axis = 0)
+
+        '''
+        Once the mislinking state is added we can add the additionnal directed state, constraining
+        transitions into a directed state to occur only towards the first directed state duplicated state such that
+        transitions from other states can only occur towards the first directed state of state index abrupt_change_state.
+        Directed particles can then either transition into the other directed state (duplicate) or into the other
+        states. the on rates of the 2nd directed state are 0 except from the 1st directed state and the off rates 
+        of the 2 directed states are shared.    
+        '''
+        
+        second_directed_state_on_rates = tf.stack([-10]*abrupt_change_state + [directed_directed_transition_rate] + [-10]*(nb_states - abrupt_change_state))[:, None]
+        #second_directed_state_on_rates = tf.broadcast_to(second_directed_state_on_rates[None,None, :, None], (nb_time_points, nb_tracks, nb_states + 1, 1))
+        #second_directed_state_on_rates = second_directed_state_on_rates * dts[:,:,None,None] / reference_dt
+        new_new_transition_rates = tf.concat((new_transition_rates[:,:abrupt_change_state+1], second_directed_state_on_rates, new_transition_rates[:,abrupt_change_state+1:]), 1)
+        
+        #new_new_transition_rates[:,:,abrupt_change_state, :abrupt_change_state].shape
+        #br_directed_directed_transition_rate = tf.broadcast_to(directed_directed_transition_rate[None,None,None], (nb_time_points, nb_tracks, 1))
+        #new_new_transition_rates[:,:,abrupt_change_state, abrupt_change_state+1:].shape
+                
+        second_directed_state_off_rates = tf.concat([new_new_transition_rates[abrupt_change_state, :abrupt_change_state], directed_directed_transition_rate[None], new_new_transition_rates[abrupt_change_state, abrupt_change_state:abrupt_change_state+1], new_new_transition_rates[abrupt_change_state, abrupt_change_state+2:]], axis =0)
+        new_new_transition_rates = tf.concat((new_new_transition_rates[:abrupt_change_state+1], second_directed_state_off_rates[None], new_new_transition_rates[abrupt_change_state+1:]), 0)
+        
+
+        
+        second_directed_state_on_shapes = tf.stack([1]*abrupt_change_state + [directed_directed_transition_shape] + [1]*(nb_states - abrupt_change_state))
+        #second_directed_state_on_shapes = tf.broadcast_to(second_directed_state_on_shapes[None,None, :, None], (nb_time_points, nb_tracks, nb_states + 1, 1))
+        #new_new_transition_shapes = tf.concat((new_transition_shapes[:,:,:,:abrupt_change_state+1], second_directed_state_on_shapes, new_transition_shapes[:,:,:,abrupt_change_state+1:]), 3)
+        new_new_transition_shapes = tf.concat((new_transition_shapes[:,:abrupt_change_state+1], second_directed_state_on_shapes[:, None], new_transition_shapes[:,abrupt_change_state+1:]), 1)
+        second_directed_state_off_shapes = tf.concat([new_new_transition_shapes[abrupt_change_state, :abrupt_change_state], directed_directed_transition_shape[None], new_new_transition_shapes[abrupt_change_state, abrupt_change_state+1:]], axis = 0)
+        new_new_transition_shapes = tf.concat((new_new_transition_shapes[:abrupt_change_state+1], second_directed_state_off_shapes[None], new_new_transition_shapes[abrupt_change_state+1:]), 0)
+        
+        new_new_transition_rates = tf.math.softmax(new_new_transition_rates, axis = 1)*new_new_transition_shapes/reference_dt
+        new_new_transition_rates = tf.broadcast_to(new_new_transition_rates[None,None], (nb_time_points, nb_tracks) + new_new_transition_rates.shape)
+        new_new_transition_rates = new_new_transition_rates*dts[..., None, None]
+
         return new_new_transition_shapes, new_new_transition_rates
     
     # Defining the hyperparameters of the model
@@ -3900,31 +4260,58 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     nb_gaussians = nb_obs_vars + nb_hidden_vars
     nb_states = nb_states + 1
     
-    inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
-    input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), dtype = dtype)
+    inputs = tf.keras.Input(batch_shape=(batch_size, segment_length, nb_independent_vars), dtype = dtype)
+    input_LocErrs = tf.keras.Input(batch_shape=(batch_size, segment_length, nb_independent_vars), name = 'Localization errors', dtype = dtype)
+    input_dts = tf.keras.Input(batch_shape=(batch_size, segment_length+1), name = 'frame durations', dtype = dtype)
+    input_mask = tf.keras.Input(batch_shape = (batch_size, segment_length), dtype = dtype)
+    input_isfirst = tf.keras.Input(batch_shape = (batch_size,), name = 'isfirsts', dtype = dtype)
+    '''
+    seq = TrackSegmentSequence(
+        track_list,
+        batch_size=50,
+        segment_length=20,
+        min_segment_length=4,
+        cutoff_batch_treshhold=0.5)
     
+    all_inputs, outputs = seq[1]
+    inputs = all_inputs[0]
+    input_LocErrs = all_inputs[1]
+    input_dts = all_inputs[2]
+    input_mask = tf.constant(all_inputs[3], dtype = dtype)
+    input_isfirst = tf.constant(all_inputs[4], dtype = dtype)
+    
+    inputs = tf.constant(inputs, dtype=dtype)
+    input_LocErrs = tf.constant(input_LocErrs, dtype=dtype)
+    input_dts = tf.constant(input_dts, dtype=dtype)
+    input_mask = tf.constant(input_mask, dtype=dtype)
+    input_isfirst = tf.constant(input_isfirst, dtype=dtype)
+    '''
     #inputs = tracks
     #input_mask = all_masks
     
-    transposed_inputs = transpose_layer(dtype = dtype)(inputs, perm = [2, 1, 0, 3, 4, 5])
+    reshaped_inputs = tf.keras.layers.Lambda(lambda x: x[:, None, :, None, None, :], dtype = dtype)(inputs)
+    transposed_inputs = transpose_layer(dtype = dtype)(reshaped_inputs, perm = [2, 1, 0, 3, 4, 5])
     
     Init_layer = Initial_layer_constraints_abrupt_change(nb_states,
                                            nb_gaussians,
                                            nb_obs_vars,
                                            nb_hidden_vars,
-                                           all_params,
-                                           all_initial_params,
+                                           params,
+                                           initial_params,
                                            initial_fractions,
                                            max_linking_distance,
                                            constraint_function,
+                                           reference_dt,
                                            vary_params = vary_params,
                                            vary_initial_params = vary_initial_params,
                                            vary_initial_fractions = vary_initial_fractions,
                                            sequence_length = sequence_length,
+                                           LocErr_type = LocErr_type,
                                            dtype = dtype)
+    
     #inputs = transposed_inputs
     #self = Init_layer
-    tensor1, initial_states = Init_layer(transposed_inputs)
+    tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
     
     softmax_inv_Fractions = Init_layer.initial_fractions
     log_ds = Init_layer.param_vars[:, 1]
@@ -3932,83 +4319,142 @@ def build_abrupt_directed_motion_changes_model(track_len, # maximum number of ti
     isdir = Init_layer.param_vars[:, 4]
     
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
-    Prev_coefs[:, 0, 7]
+    
+    first_mask_layer = IsfirstMaskLayer(dtype = dtype)
+    Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
+    Prev_biases = first_mask_layer(Prev_biases, Init_layer.carryout_biases, input_isfirst[None, :, None, None])
+    LP = first_mask_layer(LP, Init_layer.carryout_LP, input_isfirst[:, None])
+    
     sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
-    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
+    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, carryover = True, dtype = dtype)
+    # self = layer
+    Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_motion_states, All_coefs, All_biases, All_LPs, motion_states = layer(sliced_inputs, input_dts, reference_dt, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir, isfirst = input_isfirst)
     
-    #self = layer
-    # inputs = sliced_inputs
-    # mask = sliced_mask
-    states = layer(sliced_inputs, inupt_dts, reference_dt, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir)
+    states = [Prev_coefs, Prev_biases, LP, All_motion_states, motion_states]
+    carryover_layer = CarryoverAssignLayer(carryout_variables=[Init_layer.carryout_coefs,
+                                                               Init_layer.carryout_biases,
+                                                               Init_layer.carryout_LP,
+                                                               layer.carryout_segment_len,
+                                                               layer.carryout_gamma_dist_mean,
+                                                               layer.carryout_gamma_dist_var],
+                                           dtype=dtype)
     
     F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer(states)
     
-    model = tf.keras.Model(inputs=(inputs, input_mask), outputs=outputs, name="Diffusion_model")
-    pred_model = tf.keras.Model(inputs=(inputs, input_mask), outputs=All_states, name="Diffusion_model")
+    outputs = carryover_layer(outputs, [Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var])
     
+    model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask, input_isfirst),
+                           outputs=outputs, name="Diffusion_model")
+    
+    #carried_Prev_coefs, carried_Prev_biases, carried_LP, carried_segment_len, carried_gamma_dist_mean, carried_gamma_dist_var = All_states
+    pred_model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask, input_isfirst),
+                                outputs=(outputs, All_states, All_coefs, All_biases, All_LPs), name="Diffusion_model")
+        
     return model, pred_model
 
-def get_number_of_states(tracks,
+
+
+    tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
+    
+    softmax_inv_Fractions = Init_layer.initial_fractions
+    log_ds = Init_layer.param_vars[:, 1]
+    anomalous_factors = Init_layer.param_vars[:, 2]
+    isdir = Init_layer.param_vars[:, 4]
+    
+    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states    
+    
+    first_mask_layer = IsfirstMaskLayer(dtype = dtype)
+    Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
+    Prev_biases = first_mask_layer(Prev_biases, Init_layer.carryout_biases, input_isfirst[None, :, None, None])
+    LP = first_mask_layer(LP, Init_layer.carryout_LP, input_isfirst[:, None])
+    
+    sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
+    sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
+    
+
+def get_number_of_states(track_list,
                          params,
                          initial_params,
                          transition_shapes,
                          transition_rates,
                          initial_fractions,
-                         nb_dims,
-                         sequence_length,
-                         max_linking_distance,
-                         estimated_density,
-                         epochs = 100,
-                         epoch_decay = 70,
+                         reference_dt,
+                         dt_list = None,
+                         LocErr_list = None,
+                         nb_dims = 2,
+                         sequence_length = 10,
+                         max_linking_distance = 0.4,
+                         estimated_density = 0.001,
+                         epochs = 50,
+                         epoch_decay = 40,
                          learning_rate = 0.02,
                          decay_rate = 0.005,
                          batch_size = 100,
                          track_masks = None,
-                         vary_params = None,
-                         vary_initial_params = None,
-                         vary_initial_fractions = None,
+                         vary_params = True,
+                         vary_initial_params = True,
+                         vary_initial_fractions = True,
                          vary_transition_shapes = False,
-                         vary_transition_rates = None,
+                         vary_transition_rates = True,
                          device = '/GPU:0',
                          track_segmentation = True,
-                         segment_length = 10):
+                         segment_length = 10,
+                         LocErr_type = 'Linear'):
     
-    if track_segmentation:
-        model_builder = build_segment_model
-        shuffle = False
-        seq = TrackSegmentSequence(tracks,
-                                   batch_size=batch_size,
-                                   segment_length=segment_length,
-                                   min_segment_length=4,
-                                   cutoff_batch_treshhold=0.5)
-        
-        nb_batches = len(seq)
-        tracks = np.concatenate([seq[i][0][0] for i in range(nb_batches)], axis = 0)
-        track_masks = np.concatenate([seq[i][0][1] for i in range(nb_batches)], axis = 0)
-        isfirst =  np.concatenate([seq[i][0][2] for i in range(nb_batches)], axis = 0)
-        inputs = (tracks, track_masks, isfirst)
-        decay_step = epoch_decay * nb_batches
-        
-    else:
-        model_builder = build_model
-        shuffle = True
-        if type(tracks)==list:
-            tracks, _, track_masks = padding(tracks)
-        else:
-            if type(track_masks) == type(None):
-                track_masks = np.ones(tracks.shape[:2])
-        if len(tracks.shape)==3:
-            tracks = tracks[:, None, :, None, None, :]
-        inputs = (tracks, track_masks)
-        decay_step = epoch_decay * track_masks.shape[0] // batch_size
+    if not track_segmentation:
+        segment_length = np.max([len(track) for track in track_list])
     
-    track_len = track_masks.shape[1]
+    nb_tracks = len(track_list)
+    shuffle = False
+    seq = TrackSegmentSequence(track_list,
+                               LocErr_list,
+                               dt_list,
+                               batch_size=batch_size,
+                               segment_length=segment_length,
+                               min_segment_length=4,
+                               cutoff_batch_treshhold=0.5)
+    
     nb_states = params.shape[0]
-    nb_tracks = track_masks.shape[0]
-    callbacks = [get_parameters(track_segmentation = track_segmentation)]
+    
+    if vary_params is True:
+        vary_params = np.ones((nb_states, 5))
+    elif vary_params is False:
+        vary_params = np.zeros((nb_states, 5))
+
+    if vary_initial_params is True:
+        vary_initial_params = np.ones((nb_states, 5))
+    elif vary_initial_params is False:
+        vary_initial_params = np.zeros((nb_states, 1))
+    
+    if vary_initial_fractions is True:
+        vary_initial_fractions = np.ones((1, nb_states+1))
+    elif vary_initial_fractions is False:
+        vary_initial_fractions = np.zeros((1, nb_states+1))
+     
+    if vary_transition_shapes is True:
+        vary_transition_shapes = np.ones((nb_states, nb_states))
+    elif vary_transition_shapes is False:
+        vary_transition_shapes = np.zeros((nb_states, nb_states))
+     
+    if vary_transition_rates is True:
+        vary_transition_rates = np.ones((nb_states, nb_states))
+    elif vary_transition_rates is False:
+        vary_transition_rates = np.zeros((nb_states, nb_states))
+     
+    nb_batches = len(seq)
+    #tracks = np.concatenate([seq[i][0][0] for i in range(nb_batches)], axis = 0)
+    mask_array = np.concatenate([seq[i][0][1] for i in range(nb_batches)], axis = 0)
+    nb_data_points = np.sum(mask_array[:, 1:])
+    #isfirst =  np.concatenate([seq[i][0][2] for i in range(nb_batches)], axis = 0)
+    #inputs = (tracks, track_masks, isfirst)
+    decay_step = epoch_decay * nb_batches
+    
+    #track_len = track_masks.shape[1]
+    #nb_tracks = track_masks.shape[0]
+    callbacks = [get_parameters(track_segmentation = True)] 
     
     # Store results for all models
     model_results = {}
@@ -4027,8 +4473,8 @@ def get_number_of_states(tracks,
         print(f"{'='*60}")
         
         # Build and train model with current number of states
-        model, pred_model = model_builder(
-            track_len,
+        model, pred_model = build_segment_model(
+            segment_length,
             current_nb_states,
             current_params,
             current_initial_params,
@@ -4036,6 +4482,7 @@ def get_number_of_states(tracks,
             current_transition_shapes,
             current_initial_fractions,
             batch_size,
+            reference_dt,
             nb_dims=nb_dims,
             sequence_length=sequence_length,
             max_linking_distance=max_linking_distance,
@@ -4044,9 +4491,11 @@ def get_number_of_states(tracks,
             vary_initial_params=vary_initial_params,
             vary_initial_fractions=vary_initial_fractions,
             vary_transition_shapes=vary_transition_shapes,
-            vary_transition_rates=vary_transition_rates)
+            vary_transition_rates=vary_transition_rates,
+            LocErr_type = LocErr_type)
         
-        preds = model.predict(inputs, batch_size=batch_size)
+        preds = model.predict(seq)
+        
         print('initial predictions:', MLE_loss(preds, preds))
         
         # Compile and train
@@ -4056,23 +4505,22 @@ def get_number_of_states(tracks,
         else:
             lr = WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_step)
             cur_epochs = epochs
-
-        adam = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0)
+        
+        beta_1 = max(1 - 5/batch_size, 0.8)
+        beta_2 = 1 - 0.2/nb_batches
+        adam = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=beta_1, beta_2=beta_2, clipvalue=1.0)
         model.compile(loss=MLE_loss, optimizer=adam, jit_compile=False)
         
         with tf.device(device):
-            history = model.fit(
-                inputs, 
-                tracks,
+            history = model.fit(seq, 
                 epochs= cur_epochs,
-                batch_size=batch_size,
                 callbacks=callbacks, 
                 shuffle=shuffle, 
                 verbose=1)
         
         # Calculate metrics for model selection
         with tf.device(device):
-            final_preds = model.predict(inputs, batch_size = batch_size) # history.history['loss'][-1]
+            final_preds = model.predict(seq) # history.history['loss'][-1]
         log_likelihood = -MLE_loss(final_preds, final_preds)*nb_tracks  # Total log likelihood
         
         # Count parameters (excluding the mislinking state)
@@ -4083,7 +4531,7 @@ def get_number_of_states(tracks,
         
         # Calculate information criteria
         aic = 2 * num_params - 2 * log_likelihood
-        bic = np.log(track_masks.shape[0]) * num_params - 2 * log_likelihood
+        bic = np.log(nb_data_points) * num_params - 2 * log_likelihood
         
         # Get fitted parameters
         # Get fitted parameters
@@ -4091,13 +4539,9 @@ def get_number_of_states(tracks,
         fitted_params = fitted_weights[0].copy()
         fitted_initial_params = fitted_weights[1].copy()
         fitted_initial_fractions = fitted_weights[2].copy()
-        if track_segmentation:
-            fitted_transition_rates = fitted_weights[7].copy()
-            fitted_transition_shapes = fitted_weights[8].copy()
-        else:
-            fitted_transition_rates = fitted_weights[4].copy()
-            fitted_transition_shapes = fitted_weights[5].copy()
-        
+        fitted_transition_rates = fitted_weights[7].copy()
+        fitted_transition_shapes = fitted_weights[8].copy()
+      
         (fitted_params, fitted_initial_params, fitted_initial_fractions, 
         fitted_transition_shapes, fitted_transition_rates) = get_model_raw_params(
                                                     model, 
@@ -4127,6 +4571,7 @@ def get_number_of_states(tracks,
             state_influences = []
             
             for state_to_remove in range(current_nb_states):
+                
                 print(f"\nTesting removal of state {state_to_remove}")
                 
                 # Create reduced parameter sets (removing one state)
@@ -4146,8 +4591,8 @@ def get_number_of_states(tracks,
                 reduced_transition_shapes = fitted_transition_shapes[np.ix_(keep_states, keep_states)]
                 
                 # Build reduced model
-                test_model, _ = model_builder(
-                    track_len,
+                test_model, _ = build_segment_model(
+                    segment_length,
                     current_nb_states - 1,
                     reduced_params,
                     reduced_initial_params,
@@ -4155,13 +4600,15 @@ def get_number_of_states(tracks,
                     reduced_transition_shapes,
                     reduced_initial_fractions,
                     batch_size,
+                    reference_dt,
                     nb_dims=nb_dims,
                     sequence_length=sequence_length,
                     max_linking_distance=max_linking_distance,
-                    estimated_density=estimated_density)
+                    estimated_density=estimated_density,
+                    LocErr_type = LocErr_type)
                 
                 with tf.device(device):
-                    test_preds = test_model.predict(inputs, batch_size = batch_size) #-test_history.history['loss'][-1] * track_masks.shape[0]
+                    test_preds = test_model.predict(seq) #-test_history.history['loss'][-1] * track_masks.shape[0]
                 test_likelihood = MLE_loss(test_preds, test_preds)
                 state_influences.append((state_to_remove, test_likelihood))
                 print(f"  Likelihood: {test_likelihood:.2f}")
@@ -4185,6 +4632,12 @@ def get_number_of_states(tracks,
             
             current_transition_rates = fitted_transition_rates[np.ix_(keep_states, keep_states)]
             current_transition_shapes = fitted_transition_shapes[np.ix_(keep_states, keep_states)]
+            
+            vary_params = vary_params[keep_states]
+            vary_initial_params = vary_initial_params[keep_states]
+            vary_initial_fractions = vary_initial_fractions[:, keep_states + [current_nb_states]]
+            vary_transition_shapes = vary_transition_shapes[np.ix_(keep_states, keep_states)]
+            vary_transition_rates = vary_transition_rates[np.ix_(keep_states, keep_states)]
             
             current_nb_states -= 1
         else:

@@ -8,7 +8,6 @@ Created on Wed Mar 25 15:30:22 2026
 #kjjgfsklgf
 #Next to do: adjust the memory of the transition processes so it considers the uneven dts
 #Parse the current coefficients, biases, scaling factors
-
 """
 
 
@@ -27,12 +26,12 @@ except:
     # add the absolute path if you are running the script line by line
     rootdir = r"C:\Users\Franc\Data\GitHub\ExaTrack"
 sys.path.insert(0, rootdir)
-import exatrack_while_segment_infer_vars_locErr as exatrack
+import exatrack
 #import exatrack as exatrack
 from glob import glob
 
-track_len = 50
-nb_tracks = 200
+track_len = 100
+nb_tracks = 500
 reference_dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
@@ -66,9 +65,9 @@ tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_tr
     dt_std = 0.01,
     nb_sub_steps=10,  # Sub-steps for accurate simulation
     nb_burning_steps=0,
-    bleaching_rate = 0.000001)
+    bleaching_rate = 0.02)
 
-# Refined position
+# Plot tracks
 plt.figure(figsize = (15, 15))
 lim = 1 # MreB
 nb_rows = 4
@@ -79,30 +78,27 @@ for i in range(nb_rows):
         track = tracks[ID]
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
         plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
-        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
+        plt.scatter(track[:,0], track[:,1] , c = cm.jet(np.linspace(0,1,len(track))), s = 8, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
-
+i=1
 track_list = [tracks[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
-
 # LocErr_list and dt_list can be set to None if they are assumed to be constant
 LocErr_list = [all_LocErrs[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 # LocErr_list = None 
 dt_list = [all_dts[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 
-batch_size = 10
+batch_size = 20
 
 # Prepare parameters for a 4 states model
-nb_states = 2
-
 
 # Initialize with generic guesses (Localization error, diffusion length, anomalous parameter, change of anomalous parameter)
 # Here, we are going to run the model with LocErr_type = 'Linear' so the localization error parameter should be initialized at 1
-params = np.array([[np.log(1.), np.log(0.00002), np.log(0.005), np.log(0.0001), 1],
-                   [np.log(1.), np.log(0.10), np.log(0.100), np.log(0.0100), 0]], dtype='float64')
 
-20**0.5*0.01
+params = np.array([[np.log(0.02), np.log(0.01), np.log(0.01), np.log(0.0002), 1],
+                   [np.log(0.02), np.log(0.1), np.log(0.1), np.log(0.001), 0]])
+nb_states = len(params)
 
-initial_params = np.array([[np.log(1.0)]]*nb_states, dtype='float64')
+initial_params = np.array([[np.log(60)]]*nb_states, dtype='float64')
 
 # Equal initial fractions
 initial_fractions = np.array([[0]*nb_states+[-5.0]], dtype='float64')
@@ -131,7 +127,6 @@ vary_transition_shapes = False
 vary_transition_rates = np.ones(transition_rates.shape)
 #vary_transition_rates[:2, :2] = 0
 tf.math.softmax(transition_rates)
-nb_batches = len(tracks)//batch_size
 device = '/CPU:0'
 
 estimated_density = 0.00001 # Negligible density
@@ -141,7 +136,7 @@ max_linking_distance = 1
 segment_length = 10
 
 seq = exatrack.TrackSegmentSequence(track_list,
-                                    LocErr_list=None, 
+                                    LocErr_list=LocErr_list, 
                                     dt_list=dt_list,
                                     batch_size=batch_size,
                                     segment_length=segment_length,
@@ -151,13 +146,12 @@ seq = exatrack.TrackSegmentSequence(track_list,
 nb_batches = len(seq)
 
 #all_masks = masks
-learning_rate = 0.01
+learning_rate = 0.005
 nb_batches
-epochs = 40
-epoch_decay = 30
+epochs = 60
+epoch_decay = 50
 decay_threshold = epoch_decay*nb_batches
 decay_rate = 0.005
-np.exp(-20*64*0.001)
 
 model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
@@ -193,15 +187,21 @@ with tf.device(device):
     history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
 
 '''
-Then, we can check if build_model works well too and perform inference on the hidden
-states
+Then, we predict the state of motion of the different tracks
 '''
 
 weights = model.get_weights()
-tracks, LocErrs, time_steps, masks = exatrack.padding(track_list, LocErr_list, dt_list, batch_size = None)
-tf_tracks = tf.constant(tracks[:,None, :, None, None, :nb_dims], dtype = 'float64')
 
-model, pred_model = exatrack.build_model(tracks.shape[1], # maximum number of time points in the input tracks
+max_track_len = np.max([len(track) for track in track_list])
+seq_full = exatrack.TrackSegmentSequence(track_list,
+                                    LocErr_list=LocErr_list, 
+                                    dt_list=dt_list,
+                                    batch_size=batch_size,
+                                    segment_length=max_track_len,
+                                    min_segment_length=4,
+                                    cutoff_batch_treshhold=0.5)
+
+model, pred_model = exatrack.build_segment_model(max_track_len, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
                 params = weights[0], # recurrent parameters of the model
                 initial_params = weights[1], # initial parameters of the model
@@ -221,18 +221,25 @@ model, pred_model = exatrack.build_model(tracks.shape[1], # maximum number of ti
                 vary_transition_rates = vary_transition_rates,
                 LocErr_type = 'Linear')
 
-preds, All_coefs, All_biases, All_LPs = pred_model.predict((tf_tracks, LocErrs, time_steps, masks), batch_size = batch_size)
-LocErrs.shape
+exatrack.get_model_params(model, track_segmentation=True)
+
+LPs, preds, All_coefs, All_biases, All_LPs = pred_model.predict(seq_full)
+
+tracks = np.concatenate([seq_full[i][0][0] for i in range(len(seq_full))], 0)
+LocErrs = np.concatenate([seq_full[i][0][1] for i in range(len(seq_full))], 0)
+time_steps = np.concatenate([seq_full[i][0][2] for i in range(len(seq_full))], 0)
+masks = np.concatenate([seq_full[i][0][3] for i in range(len(seq_full))], 0)
 
 '''
 Plot tracks with state predictions
 '''
+
 colors = np.array([[1,0,0],
                    [0,0,1]])
 
 plt.figure(figsize = (15, 15))
-plt.title('State predictions')
-lim = 1.5 # MreB
+plt.title('ExaTrack state predictions')
+lim = 0.8 # MreB
 nb_rows = 6
 #IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
 for i in range(nb_rows):
@@ -245,15 +252,15 @@ for i in range(nb_rows):
         p = preds[ID, mask.astype(bool)][:,:-1]
         plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
         plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
-        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
+        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 3, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
 
 '''
 Inferring the hidden real positions and velocity vector
 '''
-motion_types = list(params[:, 4]) + [0]
 
-position_mean, position_std, anomalous_mean, anomalous_std, mean_preds = exatrack.extract_smooth_hidden_variables(tf_tracks, LocErrs, time_steps, masks, pred_model, batch_size, sequence_length, motion_types, reference_dt)
+motion_types = list(params[:, 4]) + [0]
+position_mean, position_std, anomalous_mean, anomalous_std, mean_preds = exatrack.extract_smooth_hidden_variables(tracks, LocErrs, time_steps, masks, pred_model, batch_size, sequence_length, motion_types, reference_dt)
 
 for track_ID in range(3):
     plt.figure()
@@ -261,19 +268,27 @@ for track_ID in range(3):
     plt.title('Example of refined positions, track %s'%track_ID)
     plt.errorbar(np.arange(len(position_mean[track_ID,mask,0])), position_mean[track_ID,mask,0] - np.mean(position_mean[track_ID,mask,0]), yerr = position_std[track_ID,mask,0])
     plt.errorbar(np.arange(len(position_mean[track_ID,mask,1])), position_mean[track_ID,mask,1] - np.mean(position_mean[track_ID,mask,1]), yerr = position_std[track_ID,mask,1])
-    plt.xlim([-1, tracks.shape[1]-2])
+    plt.xlim([-1, np.sum(mask)])
     plt.ylabel('Position')
     plt.xlabel('Time point')
     plt.legend(['x', 'y'])
 
-track_ID = 1
+track_ID = 0
+directed_state_ID = 0
 mask = masks[track_ID, 1:-1].astype(bool)
 plt.figure()
-plt.title('Velocity of the state 0, track %s'%track_ID)
-plt.plot((anomalous_mean[track_ID,mask,0,0]**2 + anomalous_mean[track_ID,mask,0,1]**2)**0.5)
+plt.title('Velocity assuming directed state, track %s'%track_ID)
+plt.plot((anomalous_mean[track_ID, mask,directed_state_ID, 0]**2 + anomalous_mean[track_ID,mask,directed_state_ID,1]**2)**0.5)
 plt.xlabel('Time step')
 plt.ylabel('Estimated velocity (um/time step)')
-plt.plot(np.arange(tracks.shape[1]-2), 0.005*(1-all_states[:,1:-1][track_ID, mask]))
+
+track_ID = 0
+mask = masks[track_ID,].astype(bool)
+plt.figure()
+plt.title('state probabilities, track %s'%track_ID)
+plt.plot(preds[track_ID,mask])
+plt.xlabel('Time step')
+plt.ylabel('Estimated velocity (um/time step)')
 
 # mean_preds gives better estimates at transition time points than preds (intermediate probability)
 plt.figure(figsize = (15, 15))
@@ -292,7 +307,6 @@ for i in range(nb_rows):
         plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
         plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
-mean_preds.shape
 
 # Refined position
 plt.figure(figsize = (15, 15))
@@ -312,13 +326,5 @@ for i in range(nb_rows):
         plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
         plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
-mean_preds.shape
-
-
-
-
-
-
-
 
 
