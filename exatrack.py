@@ -4102,7 +4102,7 @@ def Model_finder(track_list,
     best_LogLikelihood = LogLikelihood
     best_model = 'Model 0'
     
-    for i=1 in range(nb_states):
+    for i in range(nb_states):
         model.weights[0].assign(params)
         model.weights[1].assign(initial_params)
         model.weights[2].assign(initial_fractions)
