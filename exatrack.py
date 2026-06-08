@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Mar 27 13:48:22 2026
+Created on Mon Jun  8 11:14:51 2026
 
 @author: Franc
 """
@@ -1717,7 +1717,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     all_LP += LC
     
     reshaped_Next_coefs = tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_hidden_vars])
-    transition_LPs = tf.reshape(all_LP - 200*(1-transition_mask), (nb_tracks, sequence_length*nb_states, nb_states)) - nb_dims*tf.math.log(tf.math.abs(reshaped_Next_coefs[0, :,:,:,0]*reshaped_Next_coefs[1, :,:,:,1])+1e-20)
+    transition_LPs = tf.reshape(all_LP - 200*(1-transition_mask), (nb_tracks, sequence_length*nb_states, nb_states)) - nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(reshaped_Next_coefs, [1, 2, 3, 0, 4])), axis=-1))+1e-20)
     
     max_transition_LPs = tf.reduce_max(transition_LPs, axis = 1, keepdims = True)
     transition_Ps = tf.math.exp(transition_LPs - max_transition_LPs) 
@@ -1733,7 +1733,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     transition_Next_biases = tf.reshape(Next_biases, Next_biases.shape[:2]+[sequence_length*nb_states, nb_states, nb_dims])
     transition_Next_biases = tf.reduce_sum(transition_Next_biases*transition_weights[None, :,:,:,None], axis = 2)
     
-    transition_LPs = tf.math.log(tf.reduce_sum(transition_Ps, axis = 1)) + max_transition_LPs[:,0] + nb_dims*tf.math.log(tf.math.abs(transition_Next_coefs[0, :,:,0]*transition_Next_coefs[1, :,:,1])+1e-20)
+    transition_LPs = tf.math.log(tf.reduce_sum(transition_Ps, axis = 1)) + max_transition_LPs[:,0] + nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(transition_Next_coefs, [1, 2, 0, 3])), axis=-1)) + 1e-20)
     
     stable_LPs = tf.reshape(all_LP, (nb_tracks, sequence_length* nb_states, nb_states))
     stable_weights = tf.reshape((1-transition_mask), (sequence_length* nb_states, nb_states))[None]
@@ -1775,7 +1775,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     nb_prev_gaussians = Next_coefs.shape[0]
     last_Next_coefs = tf.reshape(Next_coefs[:, :, -nb_states*2:], (nb_prev_gaussians, nb_tracks, 2, nb_states, nb_hidden_vars))
     last_Next_biases = tf.reshape(Next_biases[:, :, -nb_states*2:], (nb_prev_gaussians, nb_tracks, 2, nb_states, nb_dims))
-    last_LP = tf.reshape(new_LP[:, -nb_states*2:], (nb_tracks, 2, nb_states)) - nb_dims*tf.math.log(tf.math.abs(last_Next_coefs[0, :,:,:,0]*last_Next_coefs[1, :,:,:,1])+1e-20)
+    last_LP = tf.reshape(new_LP[:, -nb_states*2:], (nb_tracks, 2, nb_states)) - nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(last_Next_coefs, [1, 2, 3, 0, 4])), axis=-1)) + 1e-20)
     last_segment_len = tf.reshape(current_segment_len[:, -nb_states*2:], (nb_tracks, 2, nb_states))
     last_gamma_dist_mean = tf.reshape(current_gamma_dist_mean[:, -nb_states**2*2:], (nb_tracks, 2, nb_states, nb_states))
     last_gamma_dist_var = tf.reshape(current_gamma_dist_var[:, -nb_states**2*2:], (nb_tracks, 2, nb_states, nb_states))
@@ -1791,7 +1791,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     
     reduced_last_Next_coefs = tf.reduce_sum(last_Next_coefs*last_weights[None,:,:,:,None], axis = 2)
     reduced_last_Next_biases = tf.reduce_sum(last_Next_biases*last_weights[None,:,:,:, None], axis = 2)
-    reduced_last_LPs = (tf.math.log(sum_last_P + 1e-100) + last_LP_max)[:,0] + nb_dims*tf.math.log(tf.math.abs(reduced_last_Next_coefs[0,:,:,0]*reduced_last_Next_coefs[1,:,:,1])+1e-20)
+    reduced_last_LPs = (tf.math.log(sum_last_P + 1e-100) + last_LP_max)[:,0] + nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(reduced_last_Next_coefs, [1, 2, 0, 3])), axis=-1))+1e-20)
     reduced_last_segment_len = tf.reduce_sum(last_segment_len*last_weights, axis = 1)
     reduced_last_gamma_dist_mean = tf.reduce_sum(last_gamma_dist_mean*last_weights[:,:,:,None], axis = 1)
     reduced_last_gamma_dist_var = tf.reduce_sum((last_gamma_dist_var + (last_gamma_dist_mean - reduced_last_gamma_dist_mean[:,None])**2)*last_weights[:,:,:,None], axis = 1)
@@ -2177,8 +2177,8 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
             
             # predicted state distribution BEFORE the cell update
             log_w = LP - nb_dims * tf.math.log(
-                tf.math.abs(Prev_coefs[0, :, :, 0]
-                            * Prev_coefs[1, :, :, 1]) + 1e-20)
+                tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(Prev_coefs, [1, 2, 0, 3])), axis=-1))
+                + 1e-20)
             
             max_log_w = tf.reduce_max(log_w, 1, keepdims=True)
             w = tf.math.exp(log_w - max_log_w)
@@ -2220,15 +2220,14 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
                 trans_mean_i, trans_var_i,
                 gamma_dist_mean, gamma_dist_var, states, dt_ratios)
             
-            (Next_LP - nb_dims * tf.math.log(
-                tf.math.abs(Next_coefs[0, :, :, 0]
-                            * Next_coefs[1, :, :, 1]) + 1e-20))[10:20]
+            #(Next_LP - nb_dims * tf.math.log(
+            #    tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(Next_coefs, [1, 2, 0, 3])), axis=-1)) + 1e-20))[10:20]
             
             # masked update: only advance still-alive tracks
             mask_coef   = mask_i[None, :, None, None]
             mask_scalar = mask_i[:, None]
             mask_state  = mask_i[:, None, None, None]
-        
+            
             Prev_coefs      = Next_coefs       * mask_coef   + Prev_coefs      * (1 - mask_coef)
             Prev_biases     = Next_biases      * mask_coef   + Prev_biases     * (1 - mask_coef)
             LP              = Next_LP          * mask_scalar + LP              * (1 - mask_scalar)
