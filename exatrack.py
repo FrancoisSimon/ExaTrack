@@ -1075,8 +1075,8 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         
         nb_sequences = self.sequence_length * (self.nb_states + 1)
         if self.carryover:
-            self.carryout_coefs = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, input_shape[5])), dtype = dtype, trainable = False)
-            self.carryout_biases = tf.Variable(np.zeros(self.carryout_coefs.shape), dtype = dtype, trainable = False)
+            self.carryout_coefs = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, self.nb_hidden_vars)), dtype = dtype, trainable = False)
+            self.carryout_biases = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, input_shape[5])), dtype = dtype, trainable = False)
             self.carryout_LP = tf.Variable(np.zeros((input_shape[2], nb_sequences)), dtype = dtype, trainable = False)
         
         if self.LocErr_type == 'Identity':
