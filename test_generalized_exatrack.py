@@ -3,205 +3,10 @@
 Created on Mon Jun  8 11:45:59 2026
 
 @author: Franc
+
+We removed the misslinking state from ExaTrack and modified the constraint function
+so it can match any arbitrary state space model
 """
-
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Mar 25 15:30:22 2026
-
-@author: Franc
-
-
-#kjjgfsklgf
-#Next to do: adjust the memory of the transition processes so it considers the uneven dts
-#Parse the current coefficients, biases, scaling factors
-"""
-
-
-import numpy as np
-import tensorflow as tf
-import matplotlib.pyplot as plt
-from matplotlib import cm
-import random
-
-# Import the ExaTrack module (ensure exatrack.py is in your path)
-import sys
-import os
-try:
-    rootdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-except:
-    # add the absolute path if you are running the script line by line
-    rootdir = r"C:\Users\Franc\Data\GitHub\ExaTrack"
-sys.path.insert(0, rootdir)
-#import exatrack_var_shape as exatrack
-#import exatrack_var_shape as exatrack
-import generalized_exatrack as exatrack
-from glob import glob
-
-track_len = 60
-nb_tracks = 1000
-reference_dt = 0.02                 # Time interval between frames (seconds)
-LocErr = 0.02             # Localization error (µm)
-nb_dims = 2               # Number of spatial dimensions
-
-pu = 0.02
-pb = 0.1
-Ds = np.array([0.0, 1])
-dt = 0.02
-ds = (2*Ds*dt)**0.5
-velocity = 0.05
-
-tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_transition(
-    max_track_len=track_len,
-    nb_tracks=nb_tracks,
-    LocErr=0.02,
-    Fs=np.array([0.4, 0.6]),
-    Ds=Ds,
-    nb_dims=nb_dims,
-    velocities=np.array([velocity, 0.0]),      # No directed motion
-    angular_Ds=np.array([0.0, 0.0]),      # No rotational diffusion
-    conf_forces=np.array([0.0, 0.2]),
-    conf_Ds=np.array([0.0, 0.0]),         # No diffusion of confinement center
-    conf_dists=np.array([0.0, 0.0]),
-    transition_matrix=np.array([[0.00, 0.5],   # State 0 -> State 1
-                                [0.5, 0.00]]),
-    shape_matrix=np.array([[0, 5],
-                           [5, 0]]),
-    LocErr_std = 0.004,
-    field_of_view=np.array([-1, 1]),
-    dt=dt,
-    dt_std = 0.002,
-    nb_sub_steps=10,  # Sub-steps for accurate simulation
-    nb_burning_steps=0,
-    bleaching_rate = 0.0001)
-
-# Plot tracks
-plt.figure(figsize = (15, 15))
-lim = 2 # MreB
-nb_rows = 4
-IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
-for i in range(nb_rows):
-    for j in range(nb_rows):
-        ID = i*nb_rows+j #IDs[i*nb_rows+j]
-        track = tracks[ID]
-        track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
-        plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
-        plt.scatter(track[:,0], track[:,1] , c = cm.jet(np.linspace(0,1,len(track))), s = 8, marker = 'x')
-plt.gca().set_aspect('equal', adjustable='box')
-
-track_list = [tracks[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
-# LocErr_list and dt_list can be set to None if they are assumed to be constant
-LocErr_list = [all_LocErrs[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
-# LocErr_list = None 
-dt_list = [all_dts[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
-
-batch_size = 50
-
-# Prepare parameters for a 4 states model
-
-# Initialize with generic guesses (Localization error, diffusion length, anomalous parameter, change of anomalous parameter)
-# Here, we are going to run the model with LocErr_type = 'Linear' so the localization error parameter should be initialized at 1
-
-params = np.array([[np.log(1), np.log(0.01), np.log(0.01), np.log(0.0002), 1],
-                   [np.log(1), np.log(0.1), np.log(0.1), np.log(0.001), 0]])
-nb_states = len(params)
-
-initial_params = np.array([[np.log(60)]]*nb_states, dtype='float64')
-
-# Equal initial fractions
-initial_fractions = np.array([[0]*nb_states], dtype='float64')
-
-# Transition matrices
-
-# Transition matrices
-transition_rates = 3 * np.eye(nb_states, dtype='float64')
-transition_rates[0,0] = 2
-'''
-transition_rates[0,1] = -5
-transition_rates[1,0] = -7
-'''
-transition_shapes = np.zeros((nb_states, nb_states), dtype='float64')#-7
-
-# we fix the localization error of the two bound states otherwise the short lived state does not appear to the profit of two long lived states with different localization errors
-vary_params = np.ones(params.shape)
-# If we are confident we our estimations of the localization error we can fix it:
-# vary_params[:, 0] = 0
-vary_initial_params = True
-vary_initial_fractions = True
-vary_transition_shapes = True
-
-# We prevent transitions between the two bound states to improve readability
-vary_transition_rates = np.ones(transition_rates.shape)
-#vary_transition_rates[:2, :2] = 0
-tf.math.softmax(transition_rates)
-device = '/CPU:0'
-
-nb_dims = 2
-sequence_length = 5
-max_linking_distance = 1
-segment_length = 20
-
-seq = exatrack.TrackSegmentSequence(track_list,
-                                    LocErr_list=LocErr_list, 
-                                    dt_list=dt_list,
-                                    batch_size=batch_size,
-                                    segment_length=segment_length,
-                                    min_segment_length=4,
-                                    cutoff_batch_treshhold=0.5)
-
-nb_batches = len(seq)
-
-#all_masks = masks
-learning_rate = 0.10
-nb_batches
-epochs = 50
-epoch_decay = 30
-decay_threshold = epoch_decay*nb_batches
-decay_rate = 0.005
-verbose = 1
-
-model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
-                nb_states, # Number of states of their model
-                params, # recurrent parameters of the model
-                initial_params, # initial parameters of the model
-                transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
-                transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions,
-                batch_size, # number of tracks analysed at the same time
-                reference_dt,
-                nb_dims = nb_dims, # Number of dimensions of the tracks
-                sequence_length = sequence_length, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
-                vary_params = vary_params,
-                vary_initial_params = vary_initial_params,
-                vary_initial_fractions = vary_initial_fractions,
-                vary_transition_shapes = vary_transition_shapes,
-                vary_transition_rates = vary_transition_rates,
-                LocErr_type = 'Linear')
-
-#device = '/GPU:0'
-verbose = 1
-print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
-
-lr = exatrack.WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=1.0) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
-MLE_loss = exatrack.MLE_loss
-model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
-
-#preds = model.predict(seq)
-#log_likelihood = exatrack.MLE_loss(preds, preds)
-
-with tf.device(device):
-    history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
-
-'''
-Results
-loss: -72.5056{'Model types': array(['Directed motion', 'Confined motion'], dtype='<U15'), 'anomalous factors': [0.0504, 0.23], 'Localization errors': [1.002, 1.18], 'd': [0.005, 0.193], 'anomalous variation': [8e-05, 0.00047], 'transition rates': [[0.898, 0.483], [0.564, 0.907]], 'transition shapes': [[1.0, 4.742], [6.054, 1.0]], 'Fractions': [0.38, 0.62, 0.0]}
-60/60 [==============================] - 60s 998ms/step - loss: -72.5056
-'''
-
-'''
-Then, we modify the constraint function
-'''
 
 import numpy as np
 import tensorflow as tf
@@ -231,7 +36,7 @@ nb_dims = 1               # Number of spatial dimensions
 
 pu = 0.02
 pb = 0.1
-Ds = np.array([0.0, 1])
+Ds = np.array([0.0, 0.16])
 dt = 0.02
 ds = (2*Ds*dt)**0.5
 velocity = 0.05
@@ -288,14 +93,14 @@ batch_size = 20
 # Here, we are going to run the model with LocErr_type = 'Linear' so the localization error parameter should be initialized at 1
 
 nb_obs_vars = 1
-nb_hidden_vars = 2
+nb_hidden_vars = 3
 nb_dims = 1
 integration_variable_index = 1
 
 nb_states = 2
-initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2) + 1
+initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*4 - 2
 params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + 
-                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars)) + 1
+                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*4 - 2
 
 # Equal initial fractions
 initial_fractions = np.array([[0]*nb_states], dtype='float64')
@@ -303,8 +108,8 @@ initial_fractions = np.array([[0]*nb_states], dtype='float64')
 # Transition matrices
 
 # Transition matrices
-transition_rates = 3 * np.eye(nb_states, dtype='float64')
-tf.math.softmax(transition_rates)
+transition_rates = 2 * np.eye(nb_states, dtype='float64')
+tf.math.softmax(transition_rates)/3
 '''
 transition_rates[0,1] = -5
 transition_rates[1,0] = -7
@@ -323,10 +128,9 @@ vary_initial_fractions = np.ones(initial_fractions.shape)
 vary_transition_shapes = False
 
 # We prevent transitions between the two bound states to improve readability
-vary_transition_rates = True
+vary_transition_rates = False
 #vary_transition_rates[:2, :2] = 0
 tf.math.softmax(transition_rates)
-device = '/CPU:0'
 
 nb_dims = 1
 sequence_length = 5
@@ -352,130 +156,157 @@ input_mask = tf.constant(all_inputs[3], dtype = dtype)
 input_isfirst = tf.constant(all_inputs[4], dtype = dtype)
 
 
-class constraint_function:
+class constraint_function_arbitrary_KF:
     """
     Generic constraint function for a recurrent conditional-Gaussian process
     with an arbitrary number of hidden (H = nb_hidden_vars) and observed
-    (O = nb_obs_vars) variables.
- 
+    (O = nb_obs_vars) variables. This implementation is aimed to be strictly
+    equivalent to a state space model with triangular coef matrices and dense Q and R.
+    
     It produces, for every (time, track, state) triple, the coefficients,
-    biases and log-normalisers of the univariate Gaussian factors
- 
-        f_i( sum_j A[i, j] * var_j  +  bias_i )           (std_i == 1)
+    biases, STANDARD DEVIATIONS and log-normalisers of the univariate Gaussian
+    factors
+    
+        f_i( sum_j C[i, j] * var_j  +  bias_i )           (std_i learnable)
  
     that, taken together, encode the joint distribution
         p(observation_t, hidden_t, hidden_{t+1} | state_t).
+    
+    Arbitrary-Kalman-filter parameterisation
+    ----------------------------------------
+    This version is in bijection with a GENERAL linear-Gaussian state-space
+    model (full transition matrix, full process- and measurement-noise
+    covariances, full prior), so -- transitions between processes aside -- it
+    is equivalent to an arbitrary Kalman filter.  The equivalence is achieved
+    with three blocks whose diagonal is fixed and whose scale lives in explicit
+    learnable standard deviations:
  
-    Three families of Gaussians are built (see the schematic the coefficients
-    are taken from):
+        * Acur     -> DENSE H x H        (general transition, current-var block)
+        * dyn_next -> lower-tri, unit(+1) diagonal, learnable strictly-lower
+                      -> full process-noise covariance Q
+        * meas_obs -> lower-tri, unit(+1) diagonal, learnable strictly-lower
+                      -> full measurement-noise covariance R
+        * prior L  -> lower-tri, unit(+1) diagonal, learnable strictly-lower
+                      -> full prior covariance Sigma_0  (with init_bias -> mu_0)
  
-      * INITIAL gaussians (H of them, only at t = 0) -- the prior on the
-        hidden state x_0.  Lower-triangular: initial gaussian k touches the
-        current hidden variables x_0[0 .. k].
+    A block being unit-lower-triangular is exactly an LDL^T factor of a
+    precision matrix, which is why the conditional noise covariances become
+    full rather than diagonal.
  
-      * INTERNAL-STATE / dynamics gaussians (H of them per recurrent step) --
-        each defines ONE hidden variable at t+1 from the current hidden
-        variables.  Dynamics gaussian j has
-            - a diagonal coefficient on the next variable x_{t+1}[j]
-            - current-variable coefficients on x_t[H-1-j .. H-1]
-              (the "anti-triangular" pattern of the schematic: predicting the
-              first next variable depends on the last current variable, the
-              last next variable depends on every current variable).
+    Mapping to Kalman matrices (per state s, derived below)
+    ------------------------------------------------------
+    Let N = dyn_next_coefs (unit-lower-tri), P = meas_obs (unit-lower-tri),
+    L~ = prior L (unit-lower-tri), and sigma_* the corresponding stds.
  
-      * OBSERVATION / measurement gaussians (O of them per recurrent step) --
-        each relates the observed variables to ALL current hidden variables
-        (dense over x_t) and to the observed variables (O x O block), with no
-        dependence on the next variables.
+        dynamics  :  N x_{t+1} + Acur x_t + b_dyn  ~ N(0, diag(sigma_dyn^2))
+            A_kf = -N^{-1} Acur            (any H x H, since Acur is free dense)
+            b_kf = -N^{-1} b_dyn
+            Q    =  N^{-1} diag(sigma_dyn^2) N^{-T}       (any PD H x H)
  
-    Per recurrent step the gaussians are ordered  [dynamics_0 .. dynamics_{H-1},
-    measurement_0 .. measurement_{O-1}], i.e. dynamics first, matching the
-    schematic (gaussian 1..H then the measurement gaussian last).
+        measurement: P y_t + meas_hidden x_t + b_meas ~ N(0, diag(sigma_meas^2))
+            M_kf = -P^{-1} meas_hidden     (any O x H, since meas_hidden is free)
+            d_kf = -P^{-1} b_meas
+            R    =  P^{-1} diag(sigma_meas^2) P^{-T}      (any PD O x O)
  
-    Coefficients AND biases are read from the parameter vectors; the output
-    standard deviations are all 1 (the scale lives in the coefficients, so it
-    is not duplicated in the std).
+        prior     :  L~ x_0 + init_bias ~ N(0, diag(init_std^2))
+            mu_0    = -L~^{-1} init_bias
+            Sigma_0 =  L~^{-1} diag(init_std^2) L~^{-T}   (any PD H x H)
+ 
+    The inverse map (Kalman -> params) uses the unpivoted LDL^T of each
+    covariance:  Q = G diag(sigma_dyn^2) G^T with G unit-lower-tri gives
+    N = G^{-1}, dyn_next strictly-lower = strict-lower(N), Acur = -N A_kf,
+    b_dyn = -N b_kf; analogously for (P, R, meas_hidden) and (L~, Sigma_0).
  
     Parameter packing
     -----------------
-    all_initial_params[s] : length H*(H+1)/2
-        lower-triangular prior coefficients, filled row by row
-        (k = 0..H-1, m = 0..k).
+    all_initial_params[s] : length  H*(H-1)/2 + 2*H, in order
+        [ L_lower   : H*(H-1)/2   strictly-lower prior off-diagonals (diag = 1)
+          init_std  : H           log-std of each initial / prior gaussian
+          init_bias : H           bias  of each initial / prior gaussian ]
  
-    all_params[s] : length  H*(H+1)/2 + H*(O+2) + O**2, in order
-        [ dyn_cur     : H*(H+1)/2   anti-triangular dynamics current coefs
-          dyn_next    : H           diagonal next-variable coefs
-          dyn_bias    : H           dynamics drift biases
-          meas_hidden : O*H         measurement coefs over current hidden vars
-          meas_obs    : O*O         measurement coefs over observed vars ]
+    all_params[s] : length  H*H + H*(H-1)/2 + O*H + O*(O-1)/2 + 2*(H+O), order
+        [ Acur_dense   : H*H          dense transition current-var coefs
+          dyn_next_off : H*(H-1)/2    strictly-lower next-var coefs (diag = 1)
+          meas_hidden  : O*H          measurement coefs over current hidden vars
+          meas_obs_off : O*(O-1)/2    strictly-lower observed-var coefs (diag=1)
+          stds         : H+O          log-std of [dynamics_0..H-1, meas_0..O-1]
+          biases       : H+O          bias    of [dynamics_0..H-1, meas_0..O-1] ]
  
-    The only non-zero biases are the H dynamics drifts; initial and
-    measurement biases are zero (no parameters are allocated for them).
-    
+    This length equals exactly the degrees of freedom of a general KF:
+        A_kf(H*H) + Q(H(H+1)/2) + M_kf(O*H) + R(O(O+1)/2) + b(H) + d(O)
+    so the parameterisation is minimal (no redundancy).
+ 
+    Standard deviations everywhere use sigma = exp(param) + eps.
+ 
     initial_hidden_vars
     <tf.Tensor: shape=(2, 50, 2, 2)
-    
+ 
     hidden_vars
     <tf.Tensor: shape=(20, 3, 50, 2, 4)
     
+    initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*4 - 2
+    params = np.random.rand(nb_states, nb_hidden_vars**2 + nb_hidden_vars * (nb_hidden_vars+1)//2 + 
+                                nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars)) + 1
+
     """
-    
+ 
     def __init__(self, nb_hidden_vars=2, nb_obs_vars=1, integration_variable_index=1):
         self.nb_hidden_vars = nb_hidden_vars
         self.nb_obs_vars = nb_obs_vars
         self.integration_variable_index = integration_variable_index
-  
+ 
     def __call__(self, *args, **kwargs):
-        # allow calling the instance directly:  cf(params, ...)  -> cf.call(params, ...)
         return self.call(*args, **kwargs)
-    
+ 
     # ------------------------------------------------------------------
     # static index maps (depend only on H and O, built once at trace time)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _strictly_lower(n):
+        """index/mask for the strictly-lower triangle of an n x n matrix
+        (row k touches columns 0..k-1), filled row by row."""
+        idx = np.zeros((n, n), dtype=np.int32)
+        mask = np.zeros((n, n), dtype=np.float64)
+        p = 0
+        for k in range(n):
+            for m in range(k):
+                idx[k, m] = p
+                mask[k, m] = 1.0
+                p += 1
+        return idx, mask, p                      # p = n*(n-1)/2
+ 
     def _build_index_maps(self):
         H = self.nb_hidden_vars
- 
-        # initial / prior  L : lower triangular, row k touches columns 0..k
-        L_idx = np.zeros((H, H), dtype=np.int32)
-        L_mask = np.zeros((H, H), dtype=np.float64)
-        p = 0
-        for k in range(H):
-            for m in range(k + 1):
-                L_idx[k, m] = p
-                L_mask[k, m] = 1.0
-                p += 1
-        n_L = p                                            # = H*(H+1)/2
- 
-        # dynamics current  Acur : row j touches columns H-1-j .. H-1
-        A_idx = np.zeros((H, H), dtype=np.int32)
-        A_mask = np.zeros((H, H), dtype=np.float64)
-        q = 0
-        for j in range(H):
-            for kcol in range(H - 1 - j, H):
-                A_idx[j, kcol] = q
-                A_mask[j, kcol] = 1.0
-                q += 1
-        n_A = q                                            # = H*(H+1)/2
- 
-        return L_idx, L_mask, n_L, A_idx, A_mask, n_A
- 
+        O = self.nb_obs_vars
+        # strictly-lower map for H x H (used by prior L AND dynamics next-block)
+        SLH_idx, SLH_mask, n_sl_H = self._strictly_lower(H)
+        # strictly-lower map for O x O (used by measurement obs-block)
+        SLO_idx, SLO_mask, n_sl_O = self._strictly_lower(O)
+        return SLH_idx, SLH_mask, n_sl_H, SLO_idx, SLO_mask, n_sl_O
+    
     #@tf.function(jit_compile=False)
     def call(self, all_params, all_initial_params, LocErrs, dts,
              nb_dims, reference_dt, LocErr_function, dtype):
+ 
         H = self.nb_hidden_vars
         O = self.nb_obs_vars
         idx = self.integration_variable_index
         n_g = O + H                                        # recurrent gaussians
         n_trans = H - idx                                  # transition gaussians
         eps = tf.constant(1e-20, dtype=dtype)
-        
+ 
+        # unit (+1) pivot on every diagonal -> |pivot| = 1 -> normaliser = -log(std)
+        prior_diag = tf.constant(1.0, dtype=dtype)
+ 
         all_params = tf.cast(all_params, dtype)
         all_initial_params = tf.cast(all_initial_params, dtype)
         S = all_params.shape[0]                            # nb_states (static)
-        
-        L_idx, L_mask, n_L, A_idx, A_mask, n_A = self._build_index_maps()
-        L_mask = tf.constant(L_mask, dtype=dtype)
-        A_mask = tf.constant(A_mask, dtype=dtype)
-        
+ 
+        (SL_idx, SL_mask, n_sl_H,
+         SLO_idx, SLO_mask, n_sl_O) = self._build_index_maps()
+        SL_mask = tf.constant(SL_mask, dtype=dtype)
+        SLO_mask = tf.constant(SLO_mask, dtype=dtype)
+ 
         # --------------------------------------------------------------
         # dynamic track_len / nb_tracks from the (only) shape-carrying input
         # --------------------------------------------------------------
@@ -485,62 +316,87 @@ class constraint_function:
         LocErrs = tf.transpose(LocErrs, [1, 0, 2])         # (track_len, nb_tracks, *)
         track_len = tf.shape(LocErrs)[0]
         nb_tracks = tf.shape(LocErrs)[1]
-        
+ 
         # --------------------------------------------------------------
-        # slice the parameter vector
+        # slice the recurrent parameter vector
         # --------------------------------------------------------------
         o0 = 0
-        dyn_cur = all_params[:, o0:o0 + n_A];               o0 += n_A
-        dyn_next = all_params[:, o0:o0 + H];                o0 += H
-        dyn_bias = all_params[:, o0:o0 + H];                o0 += H
-        meas_hidden = all_params[:, o0:o0 + O * H];         o0 += O * H
-        meas_obs = all_params[:, o0:o0 + O * O];            o0 += O * O
+        A_flat       = all_params[:, o0:o0 + H * H];       o0 += H * H
+        dyn_next_off = all_params[:, o0:o0 + n_sl_H];      o0 += n_sl_H
+        meas_hidden  = all_params[:, o0:o0 + O * H];       o0 += O * H
+        meas_obs_off = all_params[:, o0:o0 + n_sl_O];      o0 += n_sl_O
+        stds         = all_params[:, o0:o0 + H + O];       o0 += H + O
+        biases       = all_params[:, o0:o0 + H + O];       o0 += H + O
         
+        nb_hidden_vars**2 + (nb_hidden_vars + 1) * nb_hidden_vars //2 + (nb_obs_vars + 1) * nb_obs_vars //2 +  nb_hidden_vars * nb_obs_vars
+        
+        
+        Acur = tf.reshape(A_flat, (S, H, H))               # dense transition (current block)
         meas_hidden = tf.reshape(meas_hidden, (S, O, H))
-        meas_obs = tf.reshape(meas_obs, (S, O, O))
-        
-        # coefficient matrices  (S, H, H) etc.
-        Acur = tf.reshape(tf.gather(dyn_cur, A_idx.reshape(-1), axis=1),
-                          (S, H, H)) * A_mask               # anti-triangular
-        L = tf.reshape(tf.gather(all_initial_params, L_idx.reshape(-1), axis=1),
-                       (S, H, H)) * L_mask                  # lower-triangular prior
-        
+        stds = tf.math.exp(stds) + eps                     # (S, H + O)
+ 
+        # --------------------------------------------------------------
+        # slice the initial / prior parameter vector
+        # --------------------------------------------------------------
+        i0 = 0
+        L_lower   = all_initial_params[:, i0:i0 + n_sl_H]; i0 += n_sl_H
+        init_std  = all_initial_params[:, i0:i0 + H];      i0 += H
+        init_bias = all_initial_params[:, i0:i0 + H];      i0 += H
+        init_std = tf.math.exp(init_std) + eps             # (S, H)
+ 
+        # --------------------------------------------------------------
+        # helper: unit-lower-triangular matrix from strictly-lower params
+        # --------------------------------------------------------------
+        def unit_lower(flat, n, idx_map, mask):
+            if n * (n - 1) // 2 > 0:
+                off = tf.reshape(tf.gather(flat, idx_map.reshape(-1), axis=1),
+                                 (S, n, n)) * mask
+            else:
+                off = tf.zeros((S, n, n), dtype=dtype)
+            return off + tf.eye(n, batch_shape=[S], dtype=dtype)
+ 
+        # next-variable block (unit-lower-tri -> full Q); obs block (-> full R);
+        # prior L (-> full Sigma_0). prior_diag scales the prior pivot only.
+        dyn_next_coefs = unit_lower(dyn_next_off, H, SL_idx, SL_mask)        # (S,H,H)
+        meas_obs       = unit_lower(meas_obs_off, O, SLO_idx, SLO_mask)      # (S,O,O)
+        L = (unit_lower(L_lower, H, SL_idx, SL_mask)
+             - tf.eye(H, batch_shape=[S], dtype=dtype)
+             + prior_diag * tf.eye(H, batch_shape=[S], dtype=dtype))        # diag = prior_diag
+ 
         # --------------------------------------------------------------
         # recurrent hidden-variable coefficients, last axis = 2H
         #   [ current_0..H-1 , next_0..H-1 ]
         # --------------------------------------------------------------
-        Dnext = tf.linalg.diag(dyn_next)                    # (S, H, H), row j = e_j * dyn_next[j]
-        dyn_rows = tf.concat([Acur, Dnext], axis=-1)        # (S, H, 2H)
-        
+        dyn_rows = tf.concat([Acur, dyn_next_coefs], axis=-1)       # (S, H, 2H)
         meas_next = tf.zeros((S, O, H), dtype=dtype)
-        meas_rows = tf.concat([meas_hidden, meas_next], axis=-1)   # (S, O, 2H)
+        meas_rows = tf.concat([meas_hidden, meas_next], axis=-1)    # (S, O, 2H)
  
         C = tf.concat([dyn_rows, meas_rows], axis=1)        # (S, n_g, 2H) dynamics first
         C = tf.transpose(C, [1, 0, 2])                      # (n_g, S, 2H)
         hidden_vars = tf.broadcast_to(
             C[None, :, None, :, :],
             tf.stack([track_len, n_g, nb_tracks, S, 2 * H]))
-        
-        # recurrent observation coefficients, last axis = O
+ 
+        # recurrent observation coefficients, last axis = O  (obs block lower-tri)
         obs_dyn = tf.zeros((H, S, O), dtype=dtype)
         obs_meas = tf.transpose(meas_obs, [1, 0, 2])        # (O, S, O)
         OBS = tf.concat([obs_dyn, obs_meas], axis=0)        # (n_g, S, O)
         obs_vars = tf.broadcast_to(
             OBS[None, :, None, :, :],
             tf.stack([track_len, n_g, nb_tracks, S, O]))
-        
-        # recurrent biases (dynamics drift only), last axis = nb_dims
-        Bdyn = tf.broadcast_to(dyn_bias[:, :, None], (S, H, nb_dims))
-        Bmeas = tf.zeros((S, O, nb_dims), dtype=dtype)
-        B = tf.concat([Bdyn, Bmeas], axis=1)                # (S, n_g, nb_dims)
-        B = tf.transpose(B, [1, 0, 2])                      # (n_g, S, nb_dims)
-        biases = tf.broadcast_to(
-            B[None, :, None, :, :],
+ 
+        # recurrent biases (one per gaussian), broadcast over nb_dims
+        rec_bias = tf.broadcast_to(biases[:, :, None], (S, H + O, nb_dims))
+        rec_bias = tf.transpose(rec_bias, [1, 0, 2])        # (n_g, S, nb_dims)
+        biases = tf.broadcast_to(rec_bias[None, :, None, :, :],
             tf.stack([track_len, n_g, nb_tracks, S, nb_dims]))
-        
-        Gaussian_stds = tf.ones(
-            tf.stack([track_len, n_g, nb_tracks, S, 1]), dtype=dtype)
-        
+ 
+        # recurrent standard deviations, last axis = 1
+        rec_std = tf.transpose(stds, [1, 0])                # (n_g, S)
+        Gaussian_stds = tf.broadcast_to(
+            rec_std[None, :, None, :, None],
+            tf.stack([track_len, n_g, nb_tracks, S, 1]))
+ 
         # --------------------------------------------------------------
         # initial gaussians (no time axis), last axis = H
         # --------------------------------------------------------------
@@ -548,42 +404,48 @@ class constraint_function:
         initial_hidden_vars = tf.broadcast_to(
             IL[:, None, :, :], tf.stack([H, nb_tracks, S, H]))
         initial_obs_vars = tf.zeros(tf.stack([H, nb_tracks, S, O]), dtype=dtype)
-        initial_Gaussian_stds = tf.ones(tf.stack([H, nb_tracks, S, 1]), dtype=dtype)
-        initial_biases = tf.zeros(tf.stack([H, nb_tracks, S, nb_dims]), dtype=dtype)
-                
+ 
+        init_std_g = tf.transpose(init_std, [1, 0])         # (H, S)
+        initial_Gaussian_stds = tf.broadcast_to(
+            init_std_g[:, None, :, None], tf.stack([H, nb_tracks, S, 1]))
+ 
+        init_bias_g = tf.transpose(init_bias, [1, 0])       # (H, S)
+        initial_biases = tf.broadcast_to(
+            init_bias_g[:, None, :, None], tf.stack([H, nb_tracks, S, nb_dims]))
+ 
         # --------------------------------------------------------------
-        # transition gaussians (fresh prior on vars idx..H-1, re-injected at a
-        # state change). Same lower-triangular prior rows as the initial ones.
+        # transition gaussians (fresh prior on vars idx..H-1 at a state change)
         # --------------------------------------------------------------
         TL = tf.transpose(L[:, idx:H, :], [1, 0, 2])        # (n_trans, S, H)
         transition_hidden_vars = tf.broadcast_to(
             TL[None, :, None, :, :], tf.stack([track_len, n_trans, nb_tracks, S, H]))
-        transition_Gaussian_stds = tf.ones(
-            tf.stack([track_len, n_trans, nb_tracks, S, 1]), dtype=dtype)
-        transition_biases = tf.zeros(
-            tf.stack([track_len, n_trans, nb_tracks, S, nb_dims]), dtype=dtype)
-        
+ 
+        trans_std = tf.transpose(init_std[:, idx:H], [1, 0])    # (n_trans, S)
+        transition_Gaussian_stds = tf.broadcast_to(
+            trans_std[None, :, None, :, None],
+            tf.stack([track_len, n_trans, nb_tracks, S, 1]))
+ 
+        trans_bias = tf.transpose(init_bias[:, idx:H], [1, 0])  # (n_trans, S)
+        transition_biases = tf.broadcast_to(
+            trans_bias[None, :, None, :, None],
+            tf.stack([track_len, n_trans, nb_tracks, S, nb_dims]))
+ 
         integration_variable_index = tf.constant(idx)
-        
+ 
         # --------------------------------------------------------------
-        # log-normalising factors (std == 1, so the normaliser is the log of
-        # the diagonal/pivot coefficient of every gaussian)
+        # log-normalising factors  (unit pivots everywhere -> -log(std))
         # --------------------------------------------------------------
-        log_dyn = tf.reduce_sum(tf.math.log(tf.abs(dyn_next) + eps), axis=-1)        # (S,)
-        obs_diag = tf.linalg.diag_part(meas_obs)                                     # (S, O)
-        log_obs = tf.reduce_sum(tf.math.log(tf.abs(obs_diag) + eps), axis=-1)        # (S,)
-        rec_state = log_dyn + log_obs                                                # (S,)
-        Log_factors = tf.broadcast_to(rec_state[None, None, :],
+        rec_logs = -tf.reduce_sum(tf.math.log(rec_std), axis=0)         # (S,)
+        Log_factors = tf.broadcast_to(rec_logs[None, None, :],
                                       tf.stack([track_len, nb_tracks, S]))
-        
-        L_diag = tf.linalg.diag_part(L)                                              # (S, H)
-        log_L = tf.math.log(tf.abs(L_diag) + eps)
-        init_norm_all = tf.reduce_sum(log_L, axis=-1)                                # (S,)
-        init_norm_reset = tf.reduce_sum(log_L[:, idx:H], axis=-1)                    # (S,)
-        
+ 
+        log_init = tf.math.log(init_std)                                # (S, H)
+        init_norm_all = -tf.reduce_sum(log_init, axis=-1)               # (S,)
+        init_norm_reset = -tf.reduce_sum(log_init[:, idx:H], axis=-1)   # (S,)
+ 
         initial_Log_factors = Log_factors[0] + init_norm_all[None, :]                # (N, S)
         transition_Log_factors = Log_factors + init_norm_reset[None, None, :]        # (T, N, S)
-        
+ 
         return (hidden_vars, obs_vars, Gaussian_stds, biases,
                 initial_hidden_vars, initial_obs_vars,
                 initial_Gaussian_stds, initial_biases,
@@ -591,12 +453,13 @@ class constraint_function:
                 transition_biases, integration_variable_index,
                 Log_factors, initial_Log_factors, transition_Log_factors)
 
-self = constraint_function(2,1,1)
-class constraint_function:
+
+class constraint_function_KF_diag_Q_R:
     """
     Generic constraint function for a recurrent conditional-Gaussian process
     with an arbitrary number of hidden (H = nb_hidden_vars) and observed
-    (O = nb_obs_vars) variables.
+    (O = nb_obs_vars) variables. This implementation is aimed to be strictly
+    equivalent to a state space model with diagonal process and measurement noises.
  
     It produces, for every (time, track, state) triple, the coefficients,
     biases, STANDARD DEVIATIONS and log-normalisers of the univariate Gaussian
@@ -607,76 +470,83 @@ class constraint_function:
     that, taken together, encode the joint distribution
         p(observation_t, hidden_t, hidden_{t+1} | state_t).
  
-    Difference from the original ("scale-in-the-coefficient") version
-    -----------------------------------------------------------------
-    The pivot (diagonal) coefficients of the dynamics and measurement
-    gaussians are now FIXED to 1 (identity blocks) and the scale of those
-    gaussians is carried by explicit, learnable standard deviations instead:
+    Scale convention ("identity pivot + explicit std")
+    ---------------------------------------------------
+    The pivot (diagonal) coefficient of EVERY gaussian -- dynamics,
+    measurement, AND the initial / transition priors -- is FIXED to a constant
+    (+-1) and the scale of the gaussian is carried by an explicit, learnable
+    standard deviation.  A factor with unit pivot and std sigma is equivalent
+    to one with pivot 1/sigma and std 1, so the per-gaussian log-normaliser is
+    simply  -log(sigma).
  
-        * dyn_next   ->  identity  (next-variable block = I_H),   scale -> std_dyn
-        * meas_obs   ->  identity  (observed-variable block = I_O), scale -> std_meas
- 
-    A factor with pivot 1 and std sigma is equivalent to one with pivot
-    c = 1/sigma and std 1, so the only knock-on effect is the sign of the
-    per-gaussian log-normaliser:  log|c|  ->  -log(sigma).
+        * dyn_next   -> -I_H  (next-variable block),       scale -> std_dyn
+        * meas_obs   -> -I_O  (observed-variable block),   scale -> std_meas
+        * prior diag -> +I_H  (diagonal of L, see prior_diag), scale -> init_std
  
     Three families of Gaussians are built (see the schematic the coefficients
     are taken from):
  
       * INITIAL gaussians (H of them, only at t = 0) -- the prior on the
         hidden state x_0.  Lower-triangular: initial gaussian k touches the
-        current hidden variables x_0[0 .. k].  (Unchanged: the prior scale
-        still lives in diag(L), std == 1.)
+        current hidden variables x_0[0 .. k].  The diagonal coefficient is
+        fixed to prior_diag (== 1); only the strictly-lower off-diagonals are
+        learned.  Each has a learnable std (init_std[k]) and bias
+        (init_bias[k]).
  
       * INTERNAL-STATE / dynamics gaussians (H of them per recurrent step) --
         each defines ONE hidden variable at t+1 from the current hidden
         variables.  Dynamics gaussian j has
-            - a UNIT (identity) coefficient on the next variable x_{t+1}[j]
+            - a UNIT (negated identity) coefficient on the next variable
+              x_{t+1}[j]
             - current-variable coefficients on x_t[H-1-j .. H-1]
               (the "anti-triangular" pattern of the schematic)
-            - a learnable standard deviation std_dyn[j] (the process noise).
+            - a learnable standard deviation std_dyn[j] (process noise).
  
       * OBSERVATION / measurement gaussians (O of them per recurrent step) --
         each relates the observed variables to ALL current hidden variables
-        (dense over x_t) and to the observed variables through the IDENTITY
-        (O x O identity block), with no dependence on the next variables and a
-        learnable standard deviation std_meas[i] (the measurement noise).
+        (dense over x_t) and to the observed variables through the (negated)
+        IDENTITY (O x O block), with no dependence on the next variables and a
+        learnable standard deviation std_meas[i] (measurement noise).
  
     Per recurrent step the gaussians are ordered  [dynamics_0 .. dynamics_{H-1},
-    measurement_0 .. measurement_{O-1}], i.e. dynamics first, matching the
-    schematic (gaussian 1..H then the measurement gaussian last).
+    measurement_0 .. measurement_{O-1}], i.e. dynamics first.
+ 
+    Transition gaussians (re-injected at a state change) reuse the SAME prior
+    rows idx..H-1 of L, and therefore the SAME std / bias slice init_std[idx:H]
+    / init_bias[idx:H] as the corresponding initial gaussians.
  
     Parameter packing
     -----------------
-    all_initial_params[s] : length H*(H+1)/2
-        lower-triangular prior coefficients, filled row by row
-        (k = 0..H-1, m = 0..k).
+    all_initial_params[s] : length  H*(H-1)/2 + 2*H, in order
+        [ L_lower   : H*(H-1)/2   STRICTLY lower-triangular prior off-diagonals
+                                   (row k, cols 0..k-1; diagonal fixed to 1)
+          init_std  : H           log-std of each initial / prior gaussian
+          init_bias : H           bias  of each initial / prior gaussian ]
+        (stds are stored as log-std: sigma = exp(param) + eps.)
  
-    all_params[s] : length  H*(H+1)/2 + H*(O+2) + O, in order
+    all_params[s] : length  H*(H+1)/2 + O*H + 2*(H+O), in order
         [ dyn_cur     : H*(H+1)/2   anti-triangular dynamics current coefs
-          dyn_bias    : H           dynamics drift biases
           meas_hidden : O*H         measurement coefs over current hidden vars
-          std_dyn     : H           dynamics gaussian standard deviations
-          std_meas    : O           measurement gaussian standard deviations ]
+          stds        : H+O         log-std of [dynamics_0..H-1, meas_0..O-1]
+          biases      : H+O         bias    of [dynamics_0..H-1, meas_0..O-1] ]
  
-    (Relative to the original packing, dyn_next[H] and meas_obs[O*O] are gone
-    and std_dyn[H] and std_meas[O] take their place, so the total length only
-    changes by O**2 -> O.)
- 
-    The only non-zero biases are the H dynamics drifts; initial and
-    measurement biases are zero (no parameters are allocated for them).
-    Standard deviations are read directly from the parameter vector and made
-    positive with abs(.) + eps; swap in tf.math.softplus / tf.exp if you
-    prefer an unconstrained (log-std) parameterisation.
+    Standard deviations everywhere use the log-std parameterisation
+    sigma = exp(param) + eps; swap in tf.abs / tf.math.softplus if preferred.
  
     initial_hidden_vars
     <tf.Tensor: shape=(2, 50, 2, 2)
  
     hidden_vars
     <tf.Tensor: shape=(20, 3, 50, 2, 4)
-    
+        
+    # parameter to initialize to populate the constraint function
+    initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*4 - 2
+    params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + 
+                                nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars)) + 1
+
     all_params = params
     all_initial_params = initial_params
+    self = constraint_function(3,1,1)
     """
  
     def __init__(self, nb_hidden_vars=2, nb_obs_vars=1, integration_variable_index=1):
@@ -694,27 +564,28 @@ class constraint_function:
     def _build_index_maps(self):
         H = self.nb_hidden_vars
  
-        # initial / prior  L : lower triangular, row k touches columns 0..k
+        # initial / prior  L : STRICTLY lower triangular now (diagonal fixed
+        # to 1 and added separately), row k touches columns 0..k-1.
         L_idx = np.zeros((H, H), dtype=np.int32)
         L_mask = np.zeros((H, H), dtype=np.float64)
         p = 0
         for k in range(H):
-            for m in range(k + 1):
+            for m in range(k):                 # m = 0 .. k-1  (excludes diagonal)
                 L_idx[k, m] = p
                 L_mask[k, m] = 1.0
                 p += 1
-        n_L = p                                            # = H*(H+1)/2
+        n_L = p                                # = H*(H-1)/2
  
         # dynamics current  Acur : row j touches columns H-1-j .. H-1
         A_idx = np.zeros((H, H), dtype=np.int32)
         A_mask = np.zeros((H, H), dtype=np.float64)
         q = 0
         for j in range(H):
-            for kcol in range(H - 1 - j, H):
+            for kcol in range(0, j + 1):
                 A_idx[j, kcol] = q
                 A_mask[j, kcol] = 1.0
                 q += 1
-        n_A = q                                            # = H*(H+1)/2
+        n_A = q                                # = H*(H+1)/2
  
         return L_idx, L_mask, n_L, A_idx, A_mask, n_A
  
@@ -728,15 +599,20 @@ class constraint_function:
         n_g = O + H                                        # recurrent gaussians
         n_trans = H - idx                                  # transition gaussians
         eps = tf.constant(1e-20, dtype=dtype)
- 
+        
+        # pivot of the initial / transition prior gaussians (diagonal of L).
+        # Fixed to +1 as requested; set to -1.0 to match the -I convention of
+        # the dynamics / measurement pivots (mathematically equivalent).
+        prior_diag = tf.constant(1.0, dtype=dtype)
+        
         all_params = tf.cast(all_params, dtype)
         all_initial_params = tf.cast(all_initial_params, dtype)
         S = all_params.shape[0]                            # nb_states (static)
- 
+        
         L_idx, L_mask, n_L, A_idx, A_mask, n_A = self._build_index_maps()
         L_mask = tf.constant(L_mask, dtype=dtype)
         A_mask = tf.constant(A_mask, dtype=dtype)
- 
+        
         # --------------------------------------------------------------
         # dynamic track_len / nb_tracks from the (only) shape-carrying input
         # --------------------------------------------------------------
@@ -748,48 +624,60 @@ class constraint_function:
         nb_tracks = tf.shape(LocErrs)[1]
  
         # --------------------------------------------------------------
-        # slice the parameter vector
-        #   dyn_next  (pivot of dynamics)   -> fixed identity, see Dnext below
-        #   meas_obs  (pivot of measurement)-> fixed identity, see meas_obs below
-        #   std_dyn / std_meas now carry the scale of those gaussians
+        # slice the recurrent parameter vector
         # --------------------------------------------------------------
         o0 = 0
         dyn_cur = all_params[:, o0:o0 + n_A];               o0 += n_A
         meas_hidden = all_params[:, o0:o0 + O * H];         o0 += O * H
-        stds = all_params[:, o0:o0 + H + O];                 o0 += H + O
-        biases = all_params[:, o0:o0 + H + O];                o0 += H + O
-        
+        stds = all_params[:, o0:o0 + H + O];                o0 += H + O
+        biases = all_params[:, o0:o0 + H + O];              o0 += H + O
+ 
         meas_hidden = tf.reshape(meas_hidden, (S, O, H))
+        stds = tf.math.exp(stds) + eps                      # (S, H + O)  recurrent stds
         
-        # positive standard deviations (scale of the dynamics / measurement gaussians)
-        stds = tf.math.exp(stds) + eps                     # (S, H + O)
-        
-        # coefficient matrices  (S, H, H) etc.
+        # --------------------------------------------------------------
+        # slice the initial / prior parameter vector
+        #   [ L_lower : n_L , init_std : H , init_bias : H ]
+        # --------------------------------------------------------------
+        i0 = 0
+        L_lower = all_initial_params[:, i0:i0 + n_L];       i0 += n_L
+        init_std = all_initial_params[:, i0:i0 + H];        i0 += H
+        init_bias = all_initial_params[:, i0:i0 + H];       i0 += H
+        init_std = tf.math.exp(init_std) + eps              # (S, H)
+ 
+        # --------------------------------------------------------------
+        # coefficient matrices  (S, H, H)
+        # --------------------------------------------------------------
         Acur = tf.reshape(tf.gather(dyn_cur, A_idx.reshape(-1), axis=1),
                           (S, H, H)) * A_mask               # anti-triangular
-        L = tf.reshape(tf.gather(all_initial_params, L_idx.reshape(-1), axis=1),
-                       (S, H, H)) * L_mask                  # lower-triangular prior
         
+        # prior L: strictly-lower off-diagonals from params + fixed diagonal.
+        # (guard n_L == 0, which happens for H == 1: no off-diagonals exist.)
+        if n_L > 0:
+            L_off = tf.reshape(tf.gather(L_lower, L_idx.reshape(-1), axis=1),
+                               (S, H, H)) * L_mask
+        else:
+            L_off = tf.zeros((S, H, H), dtype=dtype)
+        L = L_off + prior_diag * tf.eye(H, batch_shape=[S], dtype=dtype)
+ 
         # --------------------------------------------------------------
         # recurrent hidden-variable coefficients, last axis = 2H
-        #   [ current_0..H-1 , next_0..H-1 ]
-        # next-variable block is now the identity (scale moved to std_dyn)
+        #   [ current_0..H-1 , next_0..H-1 ]   (next block = -I, scale in std)
         # --------------------------------------------------------------
-        dyn_next_coefs = - tf.eye(H, batch_shape=[S], dtype=dtype)     # (S, H, H) identity next block
-        dyn_rows = tf.concat([Acur, dyn_next_coefs], axis=-1)        # (S, H, 2H)
-        
+        dyn_next_coefs = -tf.eye(H, batch_shape=[S], dtype=dtype)   # (S, H, H)
+        dyn_rows = tf.concat([Acur, dyn_next_coefs], axis=-1)       # (S, H, 2H)
+ 
         meas_next = tf.zeros((S, O, H), dtype=dtype)
-        meas_rows = tf.concat([meas_hidden, meas_next], axis=-1)   # (S, O, 2H)
+        meas_rows = tf.concat([meas_hidden, meas_next], axis=-1)    # (S, O, 2H)
  
         C = tf.concat([dyn_rows, meas_rows], axis=1)        # (S, n_g, 2H) dynamics first
         C = tf.transpose(C, [1, 0, 2])                      # (n_g, S, 2H)
         hidden_vars = tf.broadcast_to(
             C[None, :, None, :, :],
             tf.stack([track_len, n_g, nb_tracks, S, 2 * H]))
-        
-        # recurrent observation coefficients, last axis = O
-        # observed-variable block is now the identity (scale moved to std_meas)
-        meas_obs = - tf.eye(O, batch_shape=[S], dtype=dtype)  # (S, O, O) identity obs block
+ 
+        # recurrent observation coefficients, last axis = O  (obs block = -I)
+        meas_obs = -tf.eye(O, batch_shape=[S], dtype=dtype)  # (S, O, O)
         obs_dyn = tf.zeros((H, S, O), dtype=dtype)
         obs_meas = tf.transpose(meas_obs, [1, 0, 2])        # (O, S, O)
         OBS = tf.concat([obs_dyn, obs_meas], axis=0)        # (n_g, S, O)
@@ -797,64 +685,72 @@ class constraint_function:
             OBS[None, :, None, :, :],
             tf.stack([track_len, n_g, nb_tracks, S, O]))
  
-        # recurrent biases (dynamics drift only), last axis = nb_dims
-        biases = tf.broadcast_to(biases[:, :, None], (S, H + O, nb_dims))
-        biases = tf.transpose(biases, [1, 0, 2])                      # (n_g, S, nb_dims)
-        biases = tf.broadcast_to(biases[None, :, None, :, :],
+        # recurrent biases (one per gaussian), broadcast over nb_dims
+        rec_bias = tf.broadcast_to(biases[:, :, None], (S, H + O, nb_dims))
+        rec_bias = tf.transpose(rec_bias, [1, 0, 2])        # (n_g, S, nb_dims)
+        biases = tf.broadcast_to(rec_bias[None, :, None, :, :],
             tf.stack([track_len, n_g, nb_tracks, S, nb_dims]))
-        
+ 
         # --------------------------------------------------------------
-        # recurrent standard deviations (variable now), last axis = 1
+        # recurrent standard deviations, last axis = 1
         #   [ std_dyn_0..H-1 , std_meas_0..O-1 ]  (dynamics first, matches C)
         # --------------------------------------------------------------
-        rec_std = tf.transpose(stds, [1, 0])             # (n_g, S)
+        rec_std = tf.transpose(stds, [1, 0])                # (n_g, S)
         Gaussian_stds = tf.broadcast_to(
             rec_std[None, :, None, :, None],
             tf.stack([track_len, n_g, nb_tracks, S, 1]))
-        
+ 
         # --------------------------------------------------------------
         # initial gaussians (no time axis), last axis = H
-        # (unchanged: prior scale stays in diag(L), std == 1)
+        #   diagonal of L fixed to prior_diag; std and bias now learnable
         # --------------------------------------------------------------
         IL = tf.transpose(L, [1, 0, 2])                     # (H, S, H)
         initial_hidden_vars = tf.broadcast_to(
             IL[:, None, :, :], tf.stack([H, nb_tracks, S, H]))
         initial_obs_vars = tf.zeros(tf.stack([H, nb_tracks, S, O]), dtype=dtype)
-        initial_Gaussian_stds = tf.ones(tf.stack([H, nb_tracks, S, 1]), dtype=dtype)
-        initial_biases = tf.zeros(tf.stack([H, nb_tracks, S, nb_dims]), dtype=dtype)
+        
+        init_std_g = tf.transpose(init_std, [1, 0])         # (H, S)
+        initial_Gaussian_stds = tf.broadcast_to(
+            init_std_g[:, None, :, None],
+            tf.stack([H, nb_tracks, S, 1]))
+        
+        init_bias_g = tf.transpose(init_bias, [1, 0])       # (H, S)
+        initial_biases = tf.broadcast_to(
+            init_bias_g[:, None, :, None],
+            tf.stack([H, nb_tracks, S, nb_dims]))
         
         # --------------------------------------------------------------
-        # transition gaussians (fresh prior on vars idx..H-1, re-injected at a
-        # state change). Same lower-triangular prior rows as the initial ones.
-        # (unchanged: std == 1)
+        # transition gaussians (fresh prior on vars idx..H-1 at a state change).
+        #   Same prior rows idx..H-1 of L  ->  same std / bias slice idx..H-1.
         # --------------------------------------------------------------
         TL = tf.transpose(L[:, idx:H, :], [1, 0, 2])        # (n_trans, S, H)
         transition_hidden_vars = tf.broadcast_to(
             TL[None, :, None, :, :], tf.stack([track_len, n_trans, nb_tracks, S, H]))
-        transition_Gaussian_stds = tf.ones(
-            tf.stack([track_len, n_trans, nb_tracks, S, 1]), dtype=dtype)
-        transition_biases = tf.zeros(
-            tf.stack([track_len, n_trans, nb_tracks, S, nb_dims]), dtype=dtype)
+        
+        trans_std = tf.transpose(init_std[:, idx:H], [1, 0])    # (n_trans, S)
+        transition_Gaussian_stds = tf.broadcast_to(
+            trans_std[None, :, None, :, None],
+            tf.stack([track_len, n_trans, nb_tracks, S, 1]))
+        
+        trans_bias = tf.transpose(init_bias[:, idx:H], [1, 0])  # (n_trans, S)
+        transition_biases = tf.broadcast_to(
+            trans_bias[None, :, None, :, None],
+            tf.stack([track_len, n_trans, nb_tracks, S, nb_dims]))
         
         integration_variable_index = tf.constant(idx)
- 
+        
         # --------------------------------------------------------------
-        # log-normalising factors
-        #   recurrent gaussians: pivot coefficients are fixed to 1, so the
-        #   per-gaussian normaliser is  -log(std)  (the scale now lives in std).
-        #   initial / transition gaussians: pivot still lives in diag(L)
-        #   (std == 1), so their normaliser is  log|L_diag|  as before.
+        # log-normalising factors  (unit pivots everywhere -> -log(std))
         # --------------------------------------------------------------
-        #log_dyn = -tf.reduce_sum(tf.math.log(std_dyn), axis=-1)        # (S,)
-        #log_obs = -tf.reduce_sum(tf.math.log(std_meas), axis=-1)       # (S,)
-        rec_logs = -tf.reduce_sum(tf.math.log(rec_std), axis=0) #log_dyn + log_obs                                  # (S,)
+        rec_logs = -tf.reduce_sum(tf.math.log(rec_std), axis=0)         # (S,)
         Log_factors = tf.broadcast_to(rec_logs[None, None, :],
                                       tf.stack([track_len, nb_tracks, S]))
         
-        L_diag = tf.linalg.diag_part(L)                                              # (S, H)
-        log_L = tf.math.log(tf.abs(L_diag) + eps)
-        init_norm_all = tf.reduce_sum(log_L, axis=-1)                                # (S,)
-        init_norm_reset = tf.reduce_sum(log_L[:, idx:H], axis=-1)                    # (S,)
+        # diagonal of L is now fixed to +-1, so log|diag| = 0; the prior
+        # scale lives entirely in init_std -> normaliser is -log(init_std).
+        log_init = tf.math.log(init_std)                                # (S, H)
+        init_norm_all = -tf.reduce_sum(log_init, axis=-1)               # (S,)
+        init_norm_reset = -tf.reduce_sum(log_init[:, idx:H], axis=-1)   # (S,)
         
         initial_Log_factors = Log_factors[0] + init_norm_all[None, :]                # (N, S)
         transition_Log_factors = Log_factors + init_norm_reset[None, None, :]        # (T, N, S)
@@ -866,7 +762,10 @@ class constraint_function:
                 transition_biases, integration_variable_index,
                 Log_factors, initial_Log_factors, transition_Log_factors)
 
-current_constraint_function = constraint_function(nb_hidden_vars, nb_obs_vars, integration_variable_index)
+
+
+current_constraint_function = constraint_function_KF_diag_Q_R(nb_hidden_vars, nb_obs_vars, integration_variable_index)
+current_constraint_function = constraint_function_arbitrary_KF(nb_hidden_vars, nb_obs_vars, integration_variable_index)
 #self = current_constraint_function
 current_constraint_function(params, initial_params, LocErrs, dts,
          nb_dims, reference_dt, 0, dtype)
@@ -874,13 +773,17 @@ current_constraint_function(params, initial_params, LocErrs, dts,
 nb_batches = len(seq)
 
 #all_masks = masks
-learning_rate = 0.005
+learning_rate = 0.01
 nb_batches
 epochs = 150
-epoch_decay = 80
+epoch_decay = 50
 decay_threshold = epoch_decay*nb_batches
-decay_rate = 0.005
 verbose = 1
+
+# Compute the required decay rate to decay the learning rate by a factor decay_ratio
+decay_ratio = 0.001 
+decay_rate = - np.log(decay_ratio)/((epochs - epoch_decay) * nb_batches)
+
 
 model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
@@ -902,12 +805,12 @@ model, pred_model = exatrack.build_segment_model(segment_length, # maximum numbe
                 nb_LocErr_dims = 1,
                 LocErr_type = 'Linear')
 
-#device = '/GPU:0'
+device = '/CPU:0'
 verbose = 1
 print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
 
 lr = exatrack.WarmupLearningRateSchedule(10, learning_rate, decay_rate, decay_threshold) # learning rate schedule
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.95, beta_2=0.995, clipvalue=0.1) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
+optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.99, clipvalue=0.1) # after the first learning step, the parameter estimates are not too bad and we can use more classical beta parameters
 MLE_loss = exatrack.MLE_loss
 model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
 
@@ -917,7 +820,8 @@ model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
 with tf.device(device):
     history = model.fit(seq, epochs = epochs, callbacks=[], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
 
-
+plt.figure()
+plt.plot(history.history['loss'])
 
 weights = model.get_weights()
 
@@ -1001,8 +905,8 @@ for i in range(nb_rows):
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i]]
         p = preds[ID, mask.astype(bool)]
         p = np.clip(p, 0, 1)
-        plt.plot(np.arange(len(track))*0.01 + lim*j, track[:,0], ':k', alpha = 0.5)
-        plt.scatter(np.arange(len(track))*0.01 + lim*j, track[:,0] , c = p@colors, s = 7)
+        plt.plot(np.arange(len(track))*0.02 + lim*j, track[:,0], ':k', alpha = 0.5)
+        plt.scatter(np.arange(len(track))*0.02 + lim*j, track[:,0] , c = p@colors, s = 7)
 plt.gca().set_aspect('equal', adjustable='box')
 
 '''
