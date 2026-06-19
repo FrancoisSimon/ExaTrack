@@ -363,7 +363,7 @@ from glob import glob
 
 track_len = 200
 nb_tracks = 500
-reference_dt = 0.02                 # Time interval between frames (seconds)
+reference_dt = 1                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 1               # Number of spatial dimensions
 
@@ -407,7 +407,7 @@ track_list = [track[:,None,:] for track in track_list]
 track_list[0].shape
 
 LocErr_list = None
-# LocErr_list = None 
+# LocErr_list = None
 dt_list = [np.concatenate((frame_list[i][1:] - frame_list[i][:-1], [1])) for i in range(len(track_list))]
 
 batch_size = 20
@@ -434,7 +434,7 @@ initial_fractions = np.array([[0]*nb_states], dtype='float64')
 
 # Transition matrices
 transition_rates = 3 * np.eye(nb_states, dtype='float64')
-transition_shapes = np.zeros((nb_states, nb_states), dtype='float64') + np.log(2)#-7 + np.log
+transition_shapes = np.zeros((nb_states, nb_states), dtype='float64') #+ np.log(2)#-7 + np.log
 max_off_rate  = 1/3
 
 (tf.eye(nb_states, dtype = dtype) * (1 - max_off_rate + max_off_rate*tf.math.softmax(transition_rates, axis = 1)) + (1-tf.eye(nb_states, dtype = dtype)) * ( max_off_rate*tf.math.softmax(transition_rates, axis = 1)) + 1e-7) * tf.math.exp(transition_shapes)
@@ -504,7 +504,7 @@ input_isfirst = tf.constant(all_inputs[4], dtype = dtype)
 nb_batches = len(seq)
 
 #all_masks = masks
-learning_rate = 0.0002
+learning_rate = 0.00005
 nb_batches
 epochs = 150
 epoch_decay = 50
@@ -537,7 +537,7 @@ model, pred_model = exatrack.build_segment_model_LSTM(segment_length,
                              nb_LocErr_dims=1,
                              stop_gradient_features=False)
 
-device = '/CPU:0'
+device = '/GPU:0'
 verbose = 1
 print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
 
