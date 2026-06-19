@@ -2492,6 +2492,8 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     directed states) and well-anchor positions (for confined states) — both
     dt-independent quantities.
     dts=time_steps
+    
+    dts = time_steps
     '''
     motion_types = np.array(motion_types)
     nb_dims = tracks.shape[-1]
@@ -2582,6 +2584,12 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     anomalous_std_1  = anomalous_std_1[:, 1:]
     anomalous_mean_2 = motion_type_sign * anomalous_mean_2[:, :0:-1]
     anomalous_std_2  = anomalous_std_2[:, :0:-1]
+    
+    plt.plot(np.sum(anomalous_mean_1[35, :, 1]**2, axis =1)**0.5)
+    plt.plot(np.sum(anomalous_mean_2[35, :, 1]**2, axis =1)**0.5)
+    
+    plt.errorbar(np.arange(118), np.sum(anomalous_mean_1[35, :, 1]**2, axis =1)**0.5, yerr=np.mean(anomalous_std_1[35, :, 1], 1))
+    anomalous_std_1.shape
     
     '''
     anomalous_mean_1[1, :, 0]
@@ -3439,10 +3447,8 @@ class get_parameters(tf.keras.callbacks.Callback):
         model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
         params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4], 4)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'anomalous variation': list(np.round(np.exp(weights[0][:, 3]), 5)), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
         print(params)
-        #if 'loss' in model.history.history.keys() and model.history.history['loss'][-1] < -150:
-        #    dfgg
 
-def get_model_params(model, track_segmentation = False):
+def get_model_params(model, track_segmentation = True):
     weights = model.weights
     nb_states = weights[0].shape[0]
     if track_segmentation:
