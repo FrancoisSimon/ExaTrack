@@ -2069,10 +2069,11 @@ class LSTM_constraint_function(tf.keras.layers.Layer):
         n_sl_H = self.n_sl_H
         n_sl_O = self.n_sl_O
         n_g = self.n_g
-
+        
         rec = raw[..., :self.L_rec]
         ini = raw[..., self.L_rec:]
-        
+    
+        eps = 1e-20        
         # ---- slice recurrent block ----
         o = 0
         A_flat       = rec[..., o:o + H * H];     o += H * H
@@ -2092,7 +2093,8 @@ class LSTM_constraint_function(tf.keras.layers.Layer):
         #stds = tf.math.exp(log_stds) + eps                  # (N, S, H+O)
         LOG_STD_MIN = tf.math.log(tf.constant(1e-10, dtype=d))   # was implicitly 1e-20 via eps
         LOG_STD_MAX = tf.math.log(tf.constant(1e10,  dtype=d))
-        log_stds = LOG_STD_MIN + (LOG_STD_MAX - LOG_STD_MIN) * tf.math.sigmoid(log_stds)
+        #log_stds = LOG_STD_MIN + (LOG_STD_MAX - LOG_STD_MIN) * tf.math.sigmoid(log_stds)
+        log_stds = tf.math.exp(log_stds) + eps
         stds = tf.math.exp(log_stds)
 
         # ---- slice prior block ----
@@ -2101,8 +2103,8 @@ class LSTM_constraint_function(tf.keras.layers.Layer):
         log_init  = ini[..., i0:i0 + H];      i0 += H
         init_bias = ini[..., i0:i0 + H];      i0 += H
         #init_std = tf.math.exp(log_init) + eps              # (N, S, H)
-        log_init = LOG_STD_MIN + (LOG_STD_MAX - LOG_STD_MIN) * tf.math.sigmoid(log_init)
-        init_std = tf.math.exp(log_init)
+        #log_init = LOG_STD_MIN + (LOG_STD_MAX - LOG_STD_MIN) * tf.math.sigmoid(log_init)
+        init_std = tf.math.exp(log_init) + eps
         
         #tf.print('max std', tf.reduce_max(stds), tf.reduce_max(init_std))
 
@@ -2220,21 +2222,20 @@ def RNN_cell_LSTM(input_i, Prev_coefs, Prev_biases, LP, segment_len,
     transition_biases               = g['trans_biases']      # (n_trans,N,S,nb_dims)
     Log_factors_NS                  = g['Log_factors']       # (N,S)
     transition_Log_factors_NS       = g['transition_Log_factors']  # (N,S)
-
+    
     # tile transition coefs across the candidate axis (seq*S), next-state fastest
     transition_hidden_var_coefs = tf.concat(
         [transition_hidden_var_coefs] * (sequence_length * nb_states), axis=2)
-    transition_biases = tf.concat(
-        [transition_biases] * (sequence_length * nb_states), axis=2)
-
+    transition_biases = tf.concat([transition_biases] * (sequence_length * nb_states), axis=2)
+    
     # per-candidate log-normaliser (current state if no transition, next if transition)
     flat_Log = tf.einsum('ns,ps->np', Log_factors_NS, oh_row)
     flat_trans = tf.einsum('ns,ps->np', transition_Log_factors_NS, oh_col)
     reshaped_Log_factors = flat_trans * transition_mask + flat_Log * (1 - transition_mask)
-
+    
     # ============================== original cell body ======================
     current_states = states[:, :, -1:]
-
+    
     Prev_coefs2 = tf.repeat(Prev_coefs, nb_states, axis=2)
     Prev_biases2 = tf.repeat(Prev_biases, nb_states, axis=2)
     LP2 = tf.repeat(LP, nb_states, axis=1)

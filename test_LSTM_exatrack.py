@@ -1126,7 +1126,7 @@ colors = np.array([[1,0,0],
 
 plt.figure(figsize = (15, 15))
 plt.title('ExaTrack state predictions')
-lim = 2.2 # MreB
+lim = 40 # MreB
 nb_rows = 6
 #IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
 for i in range(nb_rows):

@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jun  8 11:14:51 2026
+Created on Mon Jul  6 15:46:22 2026
 
 @author: Franc
+
+Version of ExaTrack that adds a dimension to the coefficient tensors to account 
+for anisotropic localization error in the different spatial dimensions  
 """
+
 
 import numpy as np
 import tensorflow as tf
@@ -136,7 +140,7 @@ def _sample_transitions(state, current_sub_idx, cum_sub_times,
             transitions[target] = max(1, end_idx - current_sub_idx)
     return transitions
 
-def anomalous_diff_transition(max_track_len=100,                          # Maximal track length
+def anomalous_diff_transition(max_track_len=50,                          # Maximal track length
                               nb_tracks=100,                              # Number of tracks
                               LocErr=0.02,                                # Localization error
                               Fs=np.array([0., 1]),                       # Initial fractions of each state
@@ -151,15 +155,17 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
                                                           [0.1, 0.00]]),  
                               shape_matrix=np.array([[0, 1],              # Matrix of the shapes for the transition model
                                                      [1, 0]]),             
-                              bleaching_rate=1e-10,                       # Bleaching rate per time step
+                              bleaching_rate=0.01,                       # Bleaching rate per time step
                               LocErr_std=0.002,                           # Standard deviation of the localization error, can be set to 0 for constant localization error
                               dt=0.02,                                    # Time step
                               dt_std=0.002,                               # Standard deviation of the time steps, can be set to 0 for constant time steps
                               field_of_view=np.array([10, 10]),           # Size of the field of view
                               nb_burning_steps=100,                       # Number of steps used before actually simulating the tracks to better simulate lifetimes and equilibrium fractions
                               nb_sub_steps=10,
-                              return_list = False):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
+                              return_list = False, 
+                              blur_ratio = 0):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
     
+    blur_cutoff = int(np.ceil(nb_sub_steps * blur_ratio))
     nb_states = len(velocities)
     if not np.all(np.array([len(Fs), len(Ds), len(velocities), len(angular_Ds),
                             len(conf_forces), len(conf_Ds), len(conf_dists),
@@ -311,9 +317,13 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
         else:
             LocErrs = LocErr
 
-        track  = np.array(track)[::nb_sub_steps] + np.random.normal(0, LocErrs, (track_len, nb_dims))
-        states = np.array(states)[::nb_sub_steps]
-
+        if blur_ratio==0:
+            track  = np.array(track)[::nb_sub_steps] + np.random.normal(0, LocErrs, (track_len, nb_dims))
+            states = np.array(states)[::nb_sub_steps]
+        else:
+            track = np.mean(np.reshape(track, (track_len, nb_sub_steps, nb_dims))[:,:blur_cutoff], 1) + np.random.normal(0, LocErrs, (track_len, nb_dims))
+            states = np.mean(np.reshape(states, (track_len, nb_sub_steps))[:,:blur_cutoff], 1)
+            
         all_tracks[k, :track_len]  = track
         all_tracks[k, track_len:]  = track[-1]
         all_LocErrs[k, :track_len] = LocErrs
@@ -324,7 +334,7 @@ def anomalous_diff_transition(max_track_len=100,                          # Maxi
         all_states[k, track_len:]  = states[-1]
         all_masks[k, :track_len - 1] = 1
         all_masks[k, -1]             = 1
-
+    
     return all_tracks, all_LocErrs, all_dts, all_states, all_masks
 
 @njit
@@ -615,7 +625,9 @@ def log_gaussian(top, variance=tf.constant(1, dtype = dtype)):
 def norm_log_gaussian(top):
     return - 0.5*(tf.math.log(2*pi) + top**2)
 
-def RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2, next_hidden_var_coefs_1, next_hidden_var_coefs_2, biases_1, biases_2, coef_index, nb_dims = 1):
+def RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2,
+                         next_hidden_var_coefs_1, next_hidden_var_coefs_2,
+                         biases_1, biases_2, coef_index):
     '''
     Basic function of the method to simplify a product of two Gaussians that both depend on
     a hidden variable of index `coef_index` into one gaussian that depends on this variable
@@ -663,48 +675,48 @@ def RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2,
     biases4 : tensor of shape (nb_tracks, nb_states, nb_dims).
         biases of the second new Gaussian.
     '''
-    
-    C1 = current_hidden_var_coefs_1[:,:, coef_index:coef_index+1] + tf.random.normal([1,1,1], 0, 1e-20, dtype = dtype)
-    C2 = current_hidden_var_coefs_2[:,:, coef_index:coef_index+1] + tf.random.normal([1,1,1], 0, 1e-20, dtype = dtype)
-    
+    # coefs:  (nb_tracks, nb_states, nb_LocErr_dims, nb_hidden_vars)
+    # biases: (nb_tracks, nb_states, nb_dims)
+    C1 = current_hidden_var_coefs_1[:, :, :, coef_index:coef_index+1] + tf.random.normal([1,1,1,1], 0, 1e-20, dtype=dtype)
+    C2 = current_hidden_var_coefs_2[:, :, :, coef_index:coef_index+1] + tf.random.normal([1,1,1,1], 0, 1e-20, dtype=dtype)
+
     current_coefs1 = tf.math.divide_no_nan(current_hidden_var_coefs_1, C1)
     current_coefs2 = tf.math.divide_no_nan(current_hidden_var_coefs_2, C2)
-    
-    next_coefs1 = tf.math.divide_no_nan(next_hidden_var_coefs_1, C1)
-    next_coefs2 = tf.math.divide_no_nan(next_hidden_var_coefs_2, C2)
-    biases1 = tf.math.divide_no_nan(biases_1, C1[:,:])
-    biases2 = tf.math.divide_no_nan(biases_2, C2[:,:])
-    
-    var1 = 1./(C1**2 + tf.random.normal([1,1,1], 0, 1e-100, dtype = dtype))
-    var2 = 1./(C2**2 + tf.random.normal([1,1,1], 0, 1e-100, dtype = dtype))
-    
+    next_coefs1    = tf.math.divide_no_nan(next_hidden_var_coefs_1, C1)
+    next_coefs2    = tf.math.divide_no_nan(next_hidden_var_coefs_2, C2)
+
+    C1_b = C1[..., 0]   # (nb_tracks, nb_states, nb_LocErr_dims) -> broadcasts on nb_dims
+    C2_b = C2[..., 0]
+    biases1 = tf.math.divide_no_nan(biases_1, C1_b)
+    biases2 = tf.math.divide_no_nan(biases_2, C2_b)
+
+    var1 = 1. / (C1**2 + tf.random.normal([1,1,1,1], 0, 1e-100, dtype=dtype))
+    var2 = 1. / (C2**2 + tf.random.normal([1,1,1,1], 0, 1e-100, dtype=dtype))
     var3 = var1 + var2
     std3 = var3**0.5
     current_coefs3 = (current_coefs1 - current_coefs2) / std3
-    next_coefs3 = (next_coefs1 - next_coefs2) / std3
-    biases3 = (biases1 - biases2)/std3[:,:]
-    
+    next_coefs3    = (next_coefs1 - next_coefs2) / std3
+    biases3        = (biases1 - biases2) / std3[..., 0]
+
     var4 = var1 * var2 / var3
     std4 = var4**0.5
-    current_coefs4 = (current_coefs1*var2 + current_coefs2*var1)/(var3*std4)
-    next_coefs4 = (next_coefs1*var2 + next_coefs2*var1)/(var3*std4)
-    
-    biases4 = (biases1*var2[:,:] + biases2*var1[:,:])/(var3*std4)[:,:]
-    
-    LogConstant = -nb_dims*tf.math.log(tf.math.abs(C1*C2*std4*std3))[:,:,0]
-    return LogConstant, current_coefs3, current_coefs4, next_coefs3, next_coefs4, biases3, biases4
+    current_coefs4 = (current_coefs1 * var2 + current_coefs2 * var1) / (var3 * std4)
+    next_coefs4    = (next_coefs1 * var2 + next_coefs2 * var1) / (var3 * std4)
+    biases4        = (biases1 * var2[..., 0] + biases2 * var1[..., 0]) / (var3 * std4)[..., 0]
 
+    LogConstant = - tf.reduce_sum(tf.math.log(tf.math.abs(C1 * C2 * std4 * std3)[..., 0]), axis=-1)      # (nb_tracks, nb_states)
+    return LogConstant, current_coefs3, current_coefs4, next_coefs3, next_coefs4, biases3, biases4
 #%% Functions that need to be executed during the different steps of the automated integration process
 
 @tf.function(jit_compile=jit_compile)
-def intermediate_RNN_function(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims):
+def intermediate_RNN_function(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases):
     
     current_hidden_var_coefs_cp = tf.unstack(current_hidden_var_coefs)
     next_hidden_var_coefs_cp = tf.unstack(next_hidden_var_coefs)
     biases_cp = tf.unstack(biases)
     
     current_hidden_var_coefs_1, current_hidden_var_coefs_2, next_hidden_var_coefs_1, next_hidden_var_coefs_2, biases_1, biases_2 = current_hidden_var_coefs_cp[ID_1], current_hidden_var_coefs_cp[ID_2], next_hidden_var_coefs_cp[ID_1], next_hidden_var_coefs_cp[ID_2], biases_cp[ID_1], biases_cp[ID_2]
-    LogConstant, current_coefs3, current_coefs4, next_coefs3, next_coefs4, biases3, biases4 = RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2, next_hidden_var_coefs_1, next_hidden_var_coefs_2, biases_1, biases_2, coef_index, nb_dims)
+    LogConstant, current_coefs3, current_coefs4, next_coefs3, next_coefs4, biases3, biases4 = RNN_gaussian_product(current_hidden_var_coefs_1, current_hidden_var_coefs_2, next_hidden_var_coefs_1, next_hidden_var_coefs_2, biases_1, biases_2, coef_index)
     
     current_hidden_var_coefs_cp[ID_1] = tf.identity(current_coefs3)
     current_hidden_var_coefs_cp[ID_2] = tf.identity(current_coefs4)
@@ -717,15 +729,18 @@ def intermediate_RNN_function(current_hidden_var_coefs, next_hidden_var_coefs, b
     return tf.stack(current_hidden_var_coefs_cp), tf.stack(next_hidden_var_coefs_cp), tf.stack(biases_cp), LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases
 
 @tf.function(jit_compile=jit_compile)
-def final_RNN_function_phase_1(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims):
+def final_RNN_function_phase_1(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases):
     
-    current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases = intermediate_RNN_function(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims)
+    current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases = intermediate_RNN_function(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases)
     
     current_hidden_var_coefs_cp = tf.unstack(current_hidden_var_coefs_cp)
     next_hidden_var_coefs_cp = tf.unstack(next_hidden_var_coefs_cp)
     biases_cp = tf.unstack(biases_cp)
     
-    LC += - nb_dims * tf.math.log(tf.abs(current_hidden_var_coefs_cp[ID_2][:,:,coef_index])) # we must first normalize the integrated variable, log_gaussian(xs*coefs_matrix[2], 1) == log_gaussian(xs*coefs_matrix[2]/a, 1/a**2) - np.log(a)
+    #LC += - nb_dims * tf.math.log(tf.abs(current_hidden_var_coefs_cp[ID_2][:,:,coef_index])) # we must first normalize the integrated variable, log_gaussian(xs*coefs_matrix[2], 1) == log_gaussian(xs*coefs_matrix[2]/a, 1/a**2) - np.log(a)
+    _c = current_hidden_var_coefs_cp[ID_2][:, :, :, coef_index]          # (nb_tracks, nb_states, nb_LocErr_dims)
+    LC += - tf.reduce_sum(tf.math.log(tf.abs(_c)), axis=-1)
+    
     
     current_hidden_var_coefs_cp.pop(ID_2)
     next_hidden_var_coefs_cp.pop(ID_2)
@@ -736,13 +751,15 @@ def final_RNN_function_phase_1(current_hidden_var_coefs, next_hidden_var_coefs, 
     return tf.stack(current_hidden_var_coefs_cp), tf.stack(next_hidden_var_coefs_cp), tf.stack(biases_cp), LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases
 
 @tf.function(jit_compile=jit_compile)
-def no_RNN_function_phase_1(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims):
+def no_RNN_function_phase_1(current_hidden_var_coefs, next_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases):
     
     current_hidden_var_coefs_cp = tf.unstack(current_hidden_var_coefs)
     next_hidden_var_coefs_cp = tf.unstack(next_hidden_var_coefs)
     biases_cp = tf.unstack(biases)
     
-    LC += - nb_dims * tf.math.log(tf.abs(current_hidden_var_coefs_cp[ID_2][:,:,coef_index])) # we must first normalize the integrated variable, log_gaussian(xs*coefs_matrix[2], 1) == log_gaussian(xs*coefs_matrix[2]/a, 1/a**2) - np.log(a)
+    #LC += - nb_dims * tf.math.log(tf.abs(current_hidden_var_coefs_cp[ID_2][:,:,coef_index])) # we must first normalize the integrated variable, log_gaussian(xs*coefs_matrix[2], 1) == log_gaussian(xs*coefs_matrix[2]/a, 1/a**2) - np.log(a)
+    _c = current_hidden_var_coefs_cp[ID_2][:, :, :, coef_index]          # (nb_tracks, nb_states, nb_LocErr_dims)
+    LC += - tf.reduce_sum(tf.math.log(tf.abs(_c)), axis=-1)
     
     current_hidden_var_coefs_cp.pop(ID_2)
     next_hidden_var_coefs_cp.pop(ID_2)
@@ -754,9 +771,9 @@ def no_RNN_function_phase_1(current_hidden_var_coefs, next_hidden_var_coefs, bia
     return tf.stack(current_hidden_var_coefs_cp), tf.stack(next_hidden_var_coefs_cp), biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases
 
 @tf.function(jit_compile=jit_compile)
-def final_RNN_function_phase_2(next_hidden_var_coefs, current_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims):
+def final_RNN_function_phase_2(next_hidden_var_coefs, current_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases):
     
-    next_hidden_var_coefs_cp, current_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases = intermediate_RNN_function(next_hidden_var_coefs, current_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims)
+    next_hidden_var_coefs_cp, current_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases = intermediate_RNN_function(next_hidden_var_coefs, current_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases)
     
     current_hidden_var_coefs_cp = tf.unstack(current_hidden_var_coefs_cp)
     next_hidden_var_coefs_cp = tf.unstack(next_hidden_var_coefs_cp)
@@ -776,7 +793,7 @@ def final_RNN_function_phase_2(next_hidden_var_coefs, current_hidden_var_coefs, 
     return tf.stack(next_hidden_var_coefs_cp), tf.stack(current_hidden_var_coefs_cp), tf.stack(biases_cp), LC, nb_gaussians, tf.stack(kept_next_hidden_var_coefs_cp), tf.stack(kept_biases_cp)
 
 @tf.function(jit_compile=jit_compile)
-def no_RNN_function_phase_2(next_hidden_var_coefs, current_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases, nb_dims):
+def no_RNN_function_phase_2(next_hidden_var_coefs, current_hidden_var_coefs, biases, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs, kept_biases):
     
     next_hidden_var_coefs_cp = tf.unstack(next_hidden_var_coefs)
     biases_cp = tf.unstack(biases)
@@ -804,7 +821,6 @@ def RNN_reccurence_formula(current_hidden_var_coefs, # coefficients of the hidde
                            biases,
                            sequence_phase_1,
                            sequence_phase_2,
-                           nb_dims,
                            dtype = 'float64'): # False by default, set to true when aiming to compute the scaling factor
     '''
     RNN_reccurence_formula is the function that organizes and executes the different
@@ -837,7 +853,7 @@ def RNN_reccurence_formula(current_hidden_var_coefs, # coefficients of the hidde
         print('1...')
         
         coef_index, ID_1, ID_2 = s
-        current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp, nb_dims)
+        current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp)
         
     '''
     Once the integration is done, all the current_hidden_var_coefs_cp are 0 and we 
@@ -851,7 +867,7 @@ def RNN_reccurence_formula(current_hidden_var_coefs, # coefficients of the hidde
     for f, s in zip(sequence_phase_2[0][:], sequence_phase_2[1][:]):
         print('2...')
         coef_index, ID_1, ID_2 = s
-        next_hidden_var_coefs_cp, current_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(next_hidden_var_coefs_cp, current_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp, nb_dims)
+        next_hidden_var_coefs_cp, current_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(next_hidden_var_coefs_cp, current_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp)
 
     new_LCs = tf.reduce_sum(norm_log_gaussian(biases_cp), axis = 3)
     LC += tf.math.reduce_sum(new_LCs, 0)
@@ -866,7 +882,6 @@ def transition_RNN_reccurence_formula(current_hidden_var_coefs, # coefficients o
                            next_hidden_var_coefs,
                            biases,
                            transition_sequence,
-                           nb_dims,
                            dtype = 'float64'): # False by default, set to true when aiming to compute the scaling factor
     '''
     Addaptation of RNN_reccurence_formula in case of transitions between states i to j with i!=j
@@ -888,7 +903,7 @@ def transition_RNN_reccurence_formula(current_hidden_var_coefs, # coefficients o
     for f, s in zip(transition_sequence[0], transition_sequence[1]):
         print('1...')
         coef_index, ID_1, ID_2 = s
-        current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp, nb_dims)
+        current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp = f(current_hidden_var_coefs_cp, next_hidden_var_coefs_cp, biases_cp, coef_index, ID_1, ID_2, nb_hidden_variables, LC, nb_gaussians, kept_next_hidden_var_coefs_cp, kept_biases_cp)
     
     Next_coefs = current_hidden_var_coefs_cp
     Next_biases = biases_cp
@@ -899,7 +914,7 @@ def transition_RNN_reccurence_formula(current_hidden_var_coefs, # coefficients o
 class Initial_layer_constraints(tf.keras.layers.Layer):
     '''
     First layer of the model that initializes the parameters and variables
-
+    
     Responsibilities
     ----------------
     1. Owns and creates all trainable parameters of the dynamical model:
@@ -932,6 +947,11 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
     reference_dt           : scalar, reference frame duration the parameters
                              are expressed in. Per-step rescaling to actual
                              `dts` is done inside `constraint_function`.
+    blur_ratio             : Fration of the time step where the image is actually acquired.
+                             This enables to alleviate the bias of the diffusion lengths
+                             caused by motion blur. Set to 1 if the imaging is continuous,
+                             or to the ratio exposure time over time between frame
+                             in case of stroboscopic imaging.
     vary_params,
     vary_initial_params,
     vary_initial_fractions : optional float masks (same shape as the
@@ -983,6 +1003,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         nb_gaussians,
         nb_obs_vars,
         nb_hidden_vars,
+        nb_dims,
         params,
         initial_params,
         initial_fractions,
@@ -995,6 +1016,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         sequence_length = 3,
         carryover = True, # do we want a segmented model that carries over the hidden states of the model to the next batches 
         LocErr_type = 'Linear', # Choose between Identity to use
+        blur_ratio = 1,
         **kwargs):
         '''
         Stores configuration on `self` and pre-computes the integration
@@ -1024,6 +1046,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         self.nb_gaussians = nb_gaussians
         self.nb_obs_vars = nb_obs_vars
         self.nb_hidden_vars = nb_hidden_vars
+        self.nb_dims = nb_dims
         self.params = params
         self.initial_params = initial_params
         self.initial_fractions = initial_fractions
@@ -1034,8 +1057,9 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         self.vary_initial_params = vary_initial_params
         self.vary_initial_fractions = vary_initial_fractions
         self.reference_dt = reference_dt
+        self.blur_ratio = tf.constant(blur_ratio, dtype = dtype)
         
-        initial_sequence_phase_1, initial_sequence_phase_2, recurrent_sequence_phase_1, recurrent_sequence_phase_2, final_sequence_phase_1, transition_sequence = get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_hidden_vars, dtype)
+        initial_sequence_phase_1, initial_sequence_phase_2, recurrent_sequence_phase_1, recurrent_sequence_phase_2, final_sequence_phase_1, transition_sequence = get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_hidden_vars, blur_ratio, dtype)
         
         self.initial_sequence_phase_1 = initial_sequence_phase_1
         self.initial_sequence_phase_2 = initial_sequence_phase_2
@@ -1075,8 +1099,8 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         
         nb_sequences = self.sequence_length * (self.nb_states + 1)
         if self.carryover:
-            self.carryout_coefs = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, self.nb_hidden_vars)), dtype = dtype, trainable = False)
-            self.carryout_biases = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, input_shape[5])), dtype = dtype, trainable = False)
+            self.carryout_coefs = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, self.nb_dims, self.nb_hidden_vars)), dtype = dtype, trainable = False)
+            self.carryout_biases = tf.Variable(np.zeros((self.nb_hidden_vars, input_shape[2], nb_sequences, self.nb_dims)), dtype = dtype, trainable = False)
             self.carryout_LP = tf.Variable(np.zeros((input_shape[2], nb_sequences)), dtype = dtype, trainable = False)
         
         if self.LocErr_type == 'Identity':
@@ -1135,6 +1159,7 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         dtype = self.dtype
         constraint_function = self.constraint_function
         reference_dt = self.reference_dt
+        blur_ratio = self.blur_ratio
 
         param_vars = self.param_vars
         initial_param_vars = self.initial_param_vars
@@ -1146,8 +1171,8 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         vary_initial_fractions = self.vary_initial_fractions
         LocErr_function = self.LocErr_function
         
-        nb_dims = inputs.shape[-1]
-        
+        nb_dims = inputs.shape[-2]
+                
         param_vars = vary_params * param_vars + (1 - vary_params) * tf.stop_gradient(param_vars)
         initial_param_vars = vary_initial_params * initial_param_vars + (1 - vary_initial_params) * tf.stop_gradient(initial_param_vars)
         initial_fractions = vary_initial_fractions * initial_fractions + (1 - vary_initial_fractions) * tf.stop_gradient(initial_fractions)
@@ -1156,15 +1181,21 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         param_vars, initial_param_vars, initial_fractions = self.duplicate_states(param_vars, initial_param_vars, initial_fractions)
         
         # We add the mislinking state:
-        param_vars = tf.concat((param_vars, [[param_vars[-1][0], tf.math.log(tf.cast(max_linking_distance, dtype = dtype)), -15., tf.math.log(tf.cast(0.00001, dtype = dtype)), 0]]), axis = 0)
+        mislink_row = tf.concat(([tf.math.log(tf.cast(max_linking_distance, dtype=dtype)),
+                                tf.constant(-15.,  dtype=dtype),
+                                tf.math.log(tf.cast(1e-5, dtype=dtype))],
+                                param_vars[-1, 3:-1], [0.]), axis = 0)          
+        
+        param_vars = tf.concat((param_vars, [mislink_row]), axis=0)
+
         initial_param_vars = tf.concat((initial_param_vars, [initial_param_vars[-1]]), axis = 0)
         nb_states = nb_states + 1 
         
-        hidden_var_coefs, obs_var_coefs, Gaussian_stds, biases, initial_hidden_var_coefs, initial_obs_var_coefs, initial_Gaussian_stds, initial_biases, transition_hidden_var_coefs, transition_Gaussian_stds, transition_biases, integration_variable_index, Log_factors, initial_Log_factors, transition_Log_factors = constraint_function(param_vars, initial_param_vars, input_LocErrs, input_dts, nb_dims, reference_dt, LocErr_function, dtype)
+        hidden_var_coefs, obs_var_coefs, Gaussian_stds, biases, initial_hidden_var_coefs, initial_obs_var_coefs, initial_Gaussian_stds, initial_biases, transition_hidden_var_coefs, transition_Gaussian_stds, transition_biases, integration_variable_index, Log_factors, initial_Log_factors, transition_Log_factors = constraint_function(param_vars, initial_param_vars, input_LocErrs, input_dts, nb_dims, reference_dt, LocErr_function, blur_ratio, dtype)
         
         hidden_var_coefs = hidden_var_coefs/Gaussian_stds
         obs_var_coefs = obs_var_coefs/Gaussian_stds
-        biases = biases/Gaussian_stds
+        biases = biases / Gaussian_stds[..., 0, :]
         
         current_hidden_var_coefs = hidden_var_coefs[...,:nb_hidden_vars]
         next_hidden_var_coefs = hidden_var_coefs[...,nb_hidden_vars:]
@@ -1178,14 +1209,14 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         # change of variables to deal with gaussians of variance 1
         initial_hidden_var_coefs = initial_hidden_var_coefs/initial_Gaussian_stds
         initial_obs_var_coefs = initial_obs_var_coefs/initial_Gaussian_stds
-        initial_biases = initial_biases/initial_Gaussian_stds
+        initial_biases = initial_biases/initial_Gaussian_stds[..., 0, :]
         
         current_initial_hidden_var_coefs = initial_hidden_var_coefs[...,:nb_hidden_vars]
-        next_initial_hidden_var_coefs = tf.zeros((nb_hidden_vars, nb_tracks, nb_states, nb_hidden_vars), dtype = dtype)  # these coefs must equal 0 as the initial gaussians must only depend on the fist set of hidden states
+        next_initial_hidden_var_coefs = tf.zeros((nb_hidden_vars, nb_tracks, nb_states, nb_dims, nb_hidden_vars), dtype = dtype)  # these coefs must equal 0 as the initial gaussians must only depend on the fist set of hidden states
 
         # Gaussians added at state transitions
         transition_hidden_var_coefs = transition_hidden_var_coefs/transition_Gaussian_stds
-        transition_biases = transition_biases/transition_Gaussian_stds
+        transition_biases = transition_biases/transition_Gaussian_stds[..., 0, :]
 
         sequence_length = self.sequence_length
         transition_hidden_var_coefs = tf.concat([transition_hidden_var_coefs]*sequence_length*nb_states, 3)
@@ -1197,11 +1228,15 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
         biases = reccurent_biases[0]
         obs_var_coefs = reccurent_obs_var_coefs[0]
         current_hidden_var_coefs = reccurent_hidden_var_coefs[0]
-        
         next_hidden_var_coefs = reccurent_next_hidden_var_coefs[0]
+        '''
         biases += tf.reduce_sum(obs_var_coefs[...,None] * inputs[0], -2)
         biases.shape
         initial_biases += tf.reduce_sum(initial_obs_var_coefs[...,None] * inputs[0], -2)
+        '''
+        # observation fold: diagonal over the spatial axis (L broadcasts to nb_dims)
+        biases += tf.math.reduce_sum(obs_var_coefs * inputs[0], axis = -1)
+        initial_biases += tf.math.reduce_sum(initial_obs_var_coefs * inputs[0], axis = -1)
         
         current_hidden_var_coefs = tf.concat((current_initial_hidden_var_coefs, current_hidden_var_coefs), axis = 0)
         next_hidden_var_coefs =  tf.concat((next_initial_hidden_var_coefs, next_hidden_var_coefs), axis = 0)
@@ -1219,18 +1254,16 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
                                                              biases,
                                                              sequence_phase_1,
                                                              sequence_phase_2,
-                                                             nb_dims,
                                                              dtype = dtype)
         
         #initial_Log_factors, Log_factors, transition_Log_factors = self.compute_scaling_factors(param_vars, initial_param_vars)
         
         init_log_fractions = tf.concat([tf.math.log(initial_fractions)]*sequence_length, axis = 1)
-        init_log_factors = tf.concat([nb_dims*initial_Log_factors]*sequence_length, axis = 1)
-        
+        #init_log_factors = tf.concat([nb_dims*initial_Log_factors]*sequence_length, axis = 1)
+        # log-factor scaling: nb_dims already folded in constraint_function
+        init_log_factors = tf.concat([initial_Log_factors]*sequence_length, axis = 1)
         LP = LC + init_log_factors + init_log_fractions + tf.math.log(np.array(1/sequence_length))
-        
-        Log_factors = nb_dims * Log_factors
-        transition_Log_factors = nb_dims * transition_Log_factors
+                
         initial_states = [Next_coefs, Next_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases]
         
         return inputs, initial_states
@@ -1251,10 +1284,8 @@ class Initial_layer_constraints(tf.keras.layers.Layer):
 
 @tf.function
 def constraint_function(all_params, all_initial_params, LocErrs, dts,
-                        nb_dims, reference_dt, LocErr_function, dtype):
+                        nb_dims, reference_dt, LocErr_function, blur_ratio=1, dtype='float64', Multi_LocErrs = False):
     '''
-    
-    
     Vectorised, time-varying constraint function that makes the link between
     the model variables and the characteristic parameters of the Gaussians.
 
@@ -1280,15 +1311,19 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
                          (nb_tracks, track_len, 1) or
                          (nb_tracks, track_len, nb_dims). A trailing dim axis
                          is averaged out.
-    dts                : per-step frame durations, shape (nb_tracks, track_len+1)
-                         or (nb_tracks, track_len+1, 1). Must have one extra
-                         time step relative to the track length to support
-                         the directed-mode `dt_ratio_next` rescaling at
+    dts                : per-step frame durations, shape (nb_tracks, track_len+1). 
+                         Must have one extra time step relative to the track length 
+                         to support the directed-mode `dt_ratio_next` rescaling at
                          segment carryovers.
     nb_dims            : int, spatial dimensionality. Typically set to 2.
     reference_dt       : scalar, reference frame duration the parameters
                          are expressed in.
+    blur_ratio         : Fration of the time step where the image is actually acquired.
+                         This enables to alleviate the bias of the diffusion lengths
+                         caused by motion blur.
     dtype              : tensorflow dtype string (e.g. 'float64').
+    Multi_LocErrs      : bool, if True uses one localization error parameter per
+                         spatial dimension. If False, uses a unique localization error.
     
     Per-step continuous-time rescaling
     ----------------------------------
@@ -1342,6 +1377,10 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
     all_initial_params = initial_param_vars
     LocErrs = input_LocErrs
     dts = input_dts
+    
+    all_params = params
+    all_initial_params =initial_params
+    
     '''
     
     # ------------------------------------------------------------------
@@ -1351,54 +1390,65 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
     integration_variable_index = tf.constant(1)
     nb_hidden_vars             = 2
     nb_obs_vars                = 1
-    nb_transition_gaussians    = 1          # = nb_hidden_vars - integration_variable_index
-    
+    nb_transition_gaussians    = 1
+
     # ------------------------------------------------------------------
-    # Normalise LocErrs and dts to shape (track_len, nb_tracks, 1)
+    # Normalise LocErrs and dts to shape
     # ------------------------------------------------------------------
+    # LocErr occupies the LAST nb_LocErr_dims columns of all_params.
+    #   nb_LocErr_dims == 1        -> shared/isotropic (cheap size-1 dim axis)
+    #   nb_LocErr_dims == nb_dims  -> per-axis/anisotropic
+    #nb_LocErr_dims = all_params.shape[1] - 5
+
+    # ---- dts -> (track_len+1, nb_tracks, 1) ----
+    dts = tf.cast(dts, dtype)
+    dts = tf.transpose(dts, [1, 0])
+    dts = dts[..., None, None]
+    reference_dt = tf.cast(reference_dt, dtype)
+
+    # ---- LocErrs: KEEP the axis (no longer averaged away) ----
     LocErrs = tf.cast(LocErrs, dtype)
     if LocErrs.shape.rank == 2:
-        LocErrs = LocErrs[..., None]                            # (nb_tracks, track_len, 1)
-    LocErrs = tf.reduce_mean(LocErrs, axis=-1, keepdims=True)   # (nb_tracks, track_len, 1)
-    LocErrs = tf.transpose(LocErrs, [1, 0, 2])                  # (track_len, nb_tracks, 1)
+        LocErrs = LocErrs[..., None]                 # (nb_tracks, track_len, 1)
+    LocErrs = tf.transpose(LocErrs, [1, 0, 2])       # (track_len, nb_tracks, L_in)
+    LocErrs = LocErrs[:, :, None, :]                 # (track_len, nb_tracks, 1, L_in)
     
-    dts = tf.cast(dts, dtype)
-    if dts.shape.rank == 2:
-        dts = dts[..., None]                                  # (nb_tracks, track_len, 1)
-    dts = tf.reduce_mean(dts, axis=-1, keepdims=True)         # (nb_tracks, track_len, 1)
-    dts = tf.transpose(dts, [1, 0, 2])                        # (track_len, nb_tracks, 1)
-    
-    reference_dt = tf.cast(reference_dt, dtype)
-    
-    # Dynamic shape helpers
     track_len = tf.shape(LocErrs)[0]
     nb_tracks = tf.shape(LocErrs)[1]
     
     # ------------------------------------------------------------------
     # Per-state parameters, broadcast-ready on (1, 1, nb_states)
     # ------------------------------------------------------------------
-    LocErr_param    = tf.math.exp(all_params[:, 0][None, None, :])
-    LocErrs = LocErr_function(LocErrs, LocErr_param)
+    LocErr_param = tf.math.exp(all_params[:, 3:-1])[None, None]  # (1,1,S,L)
+    LocErrs = LocErr_function(LocErrs, LocErr_param)          # (track_len,nb_tracks,S,·)
+
+    LocErr_b = tf.broadcast_to(LocErrs + 1e-20, (track_len, nb_tracks, nb_states, nb_dims))                                # (track_len,nb_tracks,S,L)
     
-    log_d           = all_params[:, 1][None, None, :]
-    ano             = all_params[:, 2][None, None, :]
-    log_q           = all_params[:, 3][None, None, :]
-    is_dir          = all_params[:, 4][None, None, :]
-    log_init_spread = all_initial_params[:, 0][None, :]
+    log_d           = all_params[:, 0][None, None, :, None]
+    ano             = all_params[:, 1][None, None, :, None]
+    log_q           = all_params[:, 2][None, None, :, None]
+    is_dir          = all_params[:, -1][None, None, :, None]
+    log_init_spread = all_initial_params[ :, 0][None, None, :, None]
+
+    log_d = tf.repeat(log_d, nb_dims, axis = -1)
+    ano = tf.repeat(ano, nb_dims, axis = -1)
+    log_q = tf.repeat(log_q, nb_dims, axis = -1)
+    is_dir = tf.repeat(is_dir, nb_dims, axis = -1)
+    log_init_spread = tf.repeat(log_init_spread, nb_dims, axis = -1)
 
     # State-selection masks, shape (1, 1, nb_states)
     isdir_mask  = tf.cast(is_dir >= 0.5, dtype)
     isconf_mask = 1.0 - isdir_mask
-    
+
     # ------------------------------------------------------------------
     # Step-size scaling from reference_dt to the actual dts.
     # All scaled tensors have shape (track_len, nb_tracks, nb_states).
     # ------------------------------------------------------------------
-    dt_ratio      = dts / reference_dt   + 0.9e-20                    # (track_len, nb_tracks, 1)
-    dt_sqrt_ratio = tf.sqrt(dt_ratio)                                 # (track_len, nb_tracks, 1)
-    dt_ratio.shape
+    dt_ratio      = dts / reference_dt + 0.9e-20
+    dt_sqrt_ratio = tf.sqrt(dt_ratio)
+    
     # Values at reference_dt (per-state only)
-    d_ref = tf.exp(log_d)            # (1, 1, nb_states)
+    d_ref = tf.exp(log_d)
     q_ref = tf.exp(log_q)
     l_ref = tf.math.sigmoid(ano)
     v_ref = tf.exp(ano)
@@ -1406,13 +1456,13 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
     # Continuous-discrete conversion for l:
     #   ld = 1 - exp(-lc)   <=>   lc = -log(1 - ld)
     # so l scales correctly with dt_ratio in the continuous domain.
-    d       = d_ref * dt_sqrt_ratio[:track_len] + 1e-20                  # (track_len, nb_tracks, nb_states)
-    q       = q_ref * dt_sqrt_ratio[:track_len] + 1e-20
+    d = d_ref * dt_sqrt_ratio[:track_len] + 1e-20
+    q = q_ref * dt_sqrt_ratio[:track_len] + 1e-20
     l_ref_c = -tf.math.log(1.0 - l_ref)
-    l_c     = l_ref_c * dt_ratio[:track_len]
-    l       =  - tf.math.expm1(-l_c) + 1e-20#   = 1.0 - tf.math.exp(-l_c) + 1e-20 without underflow
+    l_c = l_ref_c * dt_ratio[:track_len]
+    l = -tf.math.expm1(-l_c) + 1e-20 # = 1.0 - tf.math.exp(-l_c) + 1e-20 without underflow
     one_minus_l = tf.math.exp(-l_c) + 1e-20
-    v       = v_ref * dt_ratio[:track_len] + 1e-20
+    v = v_ref * dt_ratio[:track_len] + 1e-20
     
     # ------------------------------------------------------------------
     # NEW: per-step rescaling of the ano_t coefficient in recurrent g2.
@@ -1421,125 +1471,116 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
     #     E[ano_{t+1} | ano_t] = (dts[t+1]/dts[t]) * ano_t.
     # For confined motion ano_t is the well anchor, dt-independent.
     # ------------------------------------------------------------------
-    dt_ratio_next         = dt_ratio[1:]
-    ano_step_ratio        = dt_ratio_next / dt_ratio[:-1]                    # (track_len, nb_tracks, 1)
+    ano_step_ratio = dt_ratio[1:] / dt_ratio[:-1]
     ano_rescale_per_state = ano_step_ratio * isdir_mask + (1.0 - isdir_mask)
-    # shape: (track_len, nb_tracks, nb_states)
-    
     # Characteristic well distance for confined motion
     #well_distance = d / tf.sqrt(1-tf.math.exp(-2*l_c))    # (nb_tracks, nb_states) independent of time or localization error
-    well_distance = d / tf.sqrt(2*(1-tf.math.exp(-2*l_c)))    # (nb_tracks, nb_states) independent of time or localization error
+    well_distance = d / tf.sqrt(2 * (1 - tf.math.exp(-2 * l_c)))
     
     # Initial position spread, broadcast to full (track_len, nb_tracks, nb_states)
-    initial_position_spread = tf.broadcast_to(tf.exp(log_init_spread),
-                                              tf.shape(d[0]))
+    initial_position_spread = tf.broadcast_to(tf.exp(log_init_spread), tf.shape(d))
     
-    # LocErrs broadcast across states
-    LocErr_b = tf.broadcast_to(LocErrs, (track_len, nb_tracks, nb_states)) + 1e-20  # (track_len, nb_tracks, nb_states)
-    
-    zeros = tf.zeros_like(LocErr_b)
-    tiny  = tf.fill((track_len, nb_tracks, nb_states), tf.constant(1e-15, dtype=dtype))
+    zeros_s = tf.zeros((track_len, nb_tracks, nb_states, nb_dims), dtype=dtype)          # scalar-per-state
+    tiny    = tf.fill((track_len, nb_tracks, nb_states, nb_dims), tf.constant(1e-15, dtype=dtype))
+    zeros_d = tf.zeros_like(LocErr_b)                                           # with L axis
+
+    #def _add_dim(g):                       # (t,n,s,4) -> (t,n,s,L,4)
+    #    g = g[..., None, :]
+    #    return tf.broadcast_to(g, tf.concat([tf.shape(g)[:-2], [nb_dims, 4]], 0))
+
     
     # ==================================================================
     # Recurrent hidden-variable coefficients
-    # Per-gaussian tensor shape: (track_len, nb_tracks, nb_states, 4)
+    # Per-gaussian tensor shape: (track_len, nb_tracks, nb_states, nb_dims, 4)
     # Stacking at axis=1 keeps time at axis 0, puts gaussians at axis 1.
-    # Final shape: (track_len, 3, nb_tracks, nb_states, 4)
+    # Final shape: (track_len, 3, nb_tracks, nb_states, nb_dims, 4)
     # Last axis ordering: [pos_t, ano_t, pos_{t+1}, ano_{t+1}]
     # ==================================================================
-
-    # Gaussian 0 -- localisation error:   [1/LocErrs, 0, 0, 0]
-    g0 = tf.stack([1.0 / LocErr_b, zeros, zeros, zeros], axis=-1)
-
+    
+    # Gaussian 0 -- localisation error:   [1/LocErrs, 0, 0, 0] in case of stroboscopic imaging
+    # If the motion is averaaged in time (continuous exposure for a fraction of the step time) the expected position becomes (1 - 0.5*blur_ratio) / LocErr_b, 0, 0.5*blur_ratio / LocErr_b, 0] 
+    g0 = tf.stack([(1 - 0.5 * blur_ratio) / LocErr_b, zeros_d,
+                   0.5 * blur_ratio / LocErr_b,       zeros_d], axis=-1)        # (t,n,s,L,4)
+    
     # Gaussian 1 -- diffusion + anomalous drift
     #   confined :  [(1-l)/d, l/d, -1/d, 0]
     #   directed :  [   1/d, 1/d, -1/d, 0]
-    
-    #g1_std = d * isdir_mask + d*((1-tf.math.exp(-2*l))/l)**0.5 * isconf_mask
-    
-    #Var = D dt/lambda dt * (1-exp(-2 lambda dt))
-    #Var = d**2/2 lambda dt * (1-exp(-2 lambda dt))
+    g1_std = d * isdir_mask + d / (2 * l_c)**0.5 * (1 - tf.math.exp(-2 * l_c))**0.5 * isconf_mask
+    inv_d  = 1.0 / g1_std
+    g1_c0  = (one_minus_l * isconf_mask + isdir_mask) * inv_d
+    g1_c1  = (l * isconf_mask + isdir_mask) * inv_d + 1.1e-20
+    g1     = tf.stack([g1_c0, g1_c1, -inv_d, zeros_s], axis=-1)
 
-    g1_std = d * isdir_mask + d/(2*l_c)**0.5*(1-tf.math.exp(-2*l_c))**0.5 * isconf_mask
-    
-    inv_d = 1.0 / g1_std
-    g1_c0 = (one_minus_l * isconf_mask + isdir_mask) * inv_d 
-    g1_c1 = (l * isconf_mask + isdir_mask) * inv_d + 1.1e-20
-    g1    = tf.stack([g1_c0, g1_c1, -inv_d, zeros], axis=-1)
-    
-    # Gaussian 2 -- anomalous-variable evolution:   [0, 1/q, 0, -1/q]
-    #inv_q = 1.0 / q
-    #g2    = tf.stack([zeros, inv_q, zeros, -inv_q], axis=-1)
-    
-    # g2 -- ano evolution (MODIFIED: ano_t coefficient scaled by dt ratio
-    # for directed states; confined states unchanged)
+    # Gaussian 2 -- anomalous-variable evolution:   [0, 1/q, 0, -1/q]  (dim-shared, broadcast to L)
     inv_q = 1.0 / q
-    g2_c1 = ano_rescale_per_state * inv_q   # was simply inv_q
-    g2    = tf.stack([zeros, g2_c1, zeros, -inv_q], axis=-1)
+    g2_c1 = ano_rescale_per_state * inv_q
+    g2    = tf.stack([zeros_s, g2_c1, zeros_s, -inv_q], axis=-1)
     
-    hidden_vars = tf.stack([g0, g1, g2], axis=1)             # (track_len, 3, nb_tracks, nb_states, 4)
+    hidden_vars = tf.stack([g0, g1, g2], axis=1)                               # (t,3,n,s,L,4)
     
     # ==================================================================
     # Recurrent observation coefficients
     # Final shape: (track_len, 3, nb_tracks, nb_states, 1)
     # Only Gaussian 0 depends on the observation: [-1/LocErrs, 0, 0]
     # ==================================================================
-    obs_g0   = (-1.0 / LocErr_b)[..., None]                  # (track_len, nb_tracks, nb_states, 1)
-    obs_zero = zeros[..., None]
-    obs_vars = tf.stack([obs_g0, obs_zero, obs_zero], axis=1)
+    obs_g0   = (-1.0 / LocErr_b)[..., None]                                    # (t,n,s,L,1)
+    obs_zero = zeros_d[..., None]
+    obs_vars = tf.stack([obs_g0, obs_zero, obs_zero], axis=1)                  # (t,3,n,s,L,1)
+
     # ==================================================================
     # Initial hidden-variable coefficients
     # Final shape: (2, nb_tracks, nb_states, 2)
-    # ==================================================================
-    init_g0 = tf.stack([1.0 / initial_position_spread, zeros[0]], axis=-1) # does not need the time axis to participate to the initialization
+    # ==================================================================    
+    init_g0 = tf.stack([1.0 / initial_position_spread, zeros_s], axis=-1)[0]   # (n,s,L,2) does not need the time axis to participate to the initialization
     
     # init_g1 needs the time axis to participate to the transition gaussians
     init_g1_c0 = (1.0  / well_distance) * isconf_mask + tiny * isdir_mask
     init_g1_c1 = (-1.0 / well_distance) * isconf_mask + (1.0 / v) * isdir_mask
-    init_g1    = tf.stack([init_g1_c0, init_g1_c1], axis=-1)
-    
-    initial_hidden_vars = tf.stack([init_g0, init_g1[0]], axis=0)   # (track_len, 2, nb_tracks, nb_states, 2)
+    init_g1    = tf.stack([init_g1_c0, init_g1_c1], axis=-1)                   # (t,n,s,L,2)
+    initial_hidden_vars = tf.stack([init_g0, init_g1[0]], axis=0)             # (2,n,s,L,2)
     
     # ==================================================================
     # Transition hidden-variable coefficients
-    # Final shape: (track_len, 1, nb_tracks, nb_states, 2)
+    # Final shape: (track_len, 1, nb_tracks, nb_states, nb_dims, 2)
     # ==================================================================
-    transition_hidden_vars = init_g1[:, None]                # insert gaussian axis at position 1
+    transition_hidden_vars = init_g1[:, None]                                 # (t,1,n,s,L,2)
+    
     # ==================================================================
     # Unit-std / zero-bias scaffolding tensors, all carrying the leading
     # time axis so they can be sliced [t] uniformly with the coefficient
     # tensors above.
     # ==================================================================
     Gaussian_stds = tf.ones((track_len, nb_obs_vars + nb_hidden_vars,
-         nb_tracks, nb_states, 1), dtype=dtype)
+                             nb_tracks, nb_states, nb_dims, 1), dtype=dtype)
     biases = tf.zeros((track_len, nb_obs_vars + nb_hidden_vars,
-         nb_tracks, nb_states, nb_dims), dtype=dtype)
-    initial_obs_vars         = tf.zeros((nb_hidden_vars,
-                                         nb_tracks, nb_states, nb_obs_vars), dtype=dtype)
-    initial_Gaussian_stds    = tf.ones((nb_hidden_vars,
-                                        nb_tracks, nb_states, 1), dtype=dtype)
-    initial_biases           = tf.zeros((nb_transition_gaussians,
-                                         nb_tracks, nb_states, nb_dims), dtype=dtype)
+                       nb_tracks, nb_states, nb_dims), dtype=dtype)
+    initial_obs_vars      = tf.zeros((nb_hidden_vars, nb_tracks, nb_states, nb_dims, nb_obs_vars), dtype=dtype)
+    initial_Gaussian_stds = tf.ones((nb_hidden_vars, nb_tracks, nb_states, nb_dims, 1), dtype=dtype)
+    initial_biases        = tf.zeros((nb_transition_gaussians, nb_tracks, nb_states, nb_dims), dtype=dtype)
     transition_Gaussian_stds = tf.ones((track_len, nb_transition_gaussians,
-         nb_tracks, nb_states, 1), dtype=dtype)
+                                        nb_tracks, nb_states, nb_dims, 1), dtype=dtype)
     transition_biases = tf.zeros((track_len, nb_transition_gaussians,
-         nb_tracks, nb_states, nb_dims), dtype=dtype)
+                                  nb_tracks, nb_states, nb_dims), dtype=dtype)
+
+    # Log factors: now fully summed over spatial dims (nb_dims folded in here,
+    # so the layer must NOT multiply by nb_dims again).
+
+    Log_factors = tf.reduce_sum(- tf.math.log(LocErr_b) - tf.math.log(g1_std) - tf.math.log(q), axis = -1)
+
+    initial_anomalous_factor = (- tf.math.log(d) + 0.5 * tf.math.log(2 * (1 - tf.math.exp(-2 * l_c)) + 1e-20)) * isconf_mask \
+                               - tf.math.log(v) * isdir_mask
+    initial_anomalous_factor = tf.reduce_sum(initial_anomalous_factor, axis = -1)
     
-    # Then, we compute the time and localization error varying scaling factors    
-    Log_factors = - tf.math.log(LocErrs + 1e-20) - tf.math.log(g1_std) - tf.math.log(q)
-        
-    #initial_anomalous_factor = (- param_vars[:,1] + 0.5*tf.math.log(2*tf.math.sigmoid(param_vars[:,2])))*(1.-state_mask) - param_vars[:,2]*state_mask
-    initial_anomalous_factor = (- tf.math.log(d) + 0.5*tf.math.log(2*(1-tf.math.exp(-2*l_c))+1e-20))*isconf_mask - tf.math.log(v)*isdir_mask
-    initial_Log_factors = Log_factors[0] - log_init_spread + initial_anomalous_factor[0]
+    log_init_spread = tf.reduce_sum(log_init_spread, axis = -1)
     
+    initial_Log_factors    = Log_factors[0] - log_init_spread[0] + initial_anomalous_factor[0]
     transition_Log_factors = Log_factors + initial_anomalous_factor
-    transition_Log_factors = transition_Log_factors
-    
+
     return (hidden_vars, obs_vars, Gaussian_stds, biases,
             initial_hidden_vars, initial_obs_vars,
             initial_Gaussian_stds, initial_biases,
             transition_hidden_vars, transition_Gaussian_stds,
-            transition_biases, integration_variable_index, 
+            transition_biases, integration_variable_index,
             Log_factors, initial_Log_factors, transition_Log_factors)
 
 @tf.function(jit_compile=False)
@@ -1626,7 +1667,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     '''
     
     current_states = states[:,:,-1:]
-    nb_dims = input_i.shape[-1]
+    nb_dims = input_i.shape[-2]
     nb_tracks = LP.shape[0]
     nb_hidden_vars = Prev_coefs.shape[3]
     nb_states = reccurent_hidden_var_coefs.shape[2]
@@ -1644,15 +1685,15 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
                                                                          next_hidden_var_coefs = tf.constant(0, dtype = dtype, shape =  alternative_Prev_coefs.shape),
                                                                          biases = alternative_Prev_biases,
                                                                          transition_sequence = transition_sequence,
-                                                                         nb_dims = nb_dims,
                                                                          dtype = dtype)
+    
     
     LP2 += LC*transition_mask + reshaped_Log_factors
     
     current_shapes = gamma_dist_mean**2/gamma_dist_var
     current_rates = gamma_dist_mean/gamma_dist_var
     
-    all_Prev_coefs = transition_Prev_coefs*transition_mask[None,:,:,None] + Prev_coefs2*(1-transition_mask[None,:,:,None])
+    all_Prev_coefs = transition_Prev_coefs*transition_mask[None,:,:,None,None] + Prev_coefs2*(1-transition_mask[None,:,:,None,None])
     all_prev_biases = transition_Prev_biases*transition_mask[None,:,:,None] + Prev_biases2*(1-transition_mask[None,:,:,None])
     # A : transition at time step k, B : no transition at time step k-1 
     # P(A|B) = P(AB)/P(B), if A, B is necessarly verified  
@@ -1663,8 +1704,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     gamma = tf.compat.v1.distributions.Gamma(current_shapes, current_rates)
     S_old = 1 - gamma.cdf(segment_len+1e-12) + 1e-12
     S_new = 1 - gamma.cdf(segment_len+1e-12 + dt_ratios[:, None]) + 1e-12
-    transition_probas = tf.clip_by_value(1 - S_new / S_old,
-    clip_value_min=1e-20, clip_value_max=1 - 1e-10)
+    transition_probas = tf.clip_by_value(1 - S_new / S_old, clip_value_min=1e-20, clip_value_max=1 - 1e-10)
     
     '''dt_ratios[:,None]*
     transition_probas = tf.clip_by_value(dt_ratios[:,None]*(tf.compat.v1.distributions.Gamma(current_shapes, current_rates).prob(segment_len[:,:]+1/6*dt_ratios[:, None])/3 + 
@@ -1700,7 +1740,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     zero_tensor = tf.constant(0, dtype = dtype, shape = all_Prev_coefs.shape)
     next_hidden_var_coefs = tf.concat((zero_tensor, tf.identity(current_reccurent_next_hidden_var_coefs)), axis = 0)
     current_biases = tf.identity(current_reccurent_biases)
-    current_biases += tf.reduce_sum(current_reccurent_obs_var_coefs[:,:,:,:,None] * input_i, (-2))
+    current_biases += tf.reduce_sum(current_reccurent_obs_var_coefs * input_i, (-1))
     biases = tf.concat((all_prev_biases, current_biases), axis =  0)
     
     Next_coefs, Next_biases, LC = RNN_reccurence_formula(current_hidden_var_coefs, # coefficients of the hidden variables that are updated
@@ -1708,7 +1748,6 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
                                                          biases,
                                                          sequence_phase_1,
                                                          sequence_phase_2,
-                                                         nb_dims = nb_dims,
                                                          #dependent_variables, # bool array that memorized if coefficients are non-nul 
                                                          #nb_hidden_vars, # number of hidden variables to integrate during this step
                                                          #nb_gaussians, # number of gaussians, must equal hidden_vars_coefs.shape[0]
@@ -1716,8 +1755,8 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     
     all_LP += LC
     
-    reshaped_Next_coefs = tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_hidden_vars])
-    transition_LPs = tf.reshape(all_LP - 200*(1-transition_mask), (nb_tracks, sequence_length*nb_states, nb_states)) - nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(reshaped_Next_coefs, [1, 2, 3, 0, 4])), axis=-1))+1e-20)
+    reshaped_Next_coefs = tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_dims, nb_hidden_vars])
+    transition_LPs = tf.reshape(all_LP - 200*(1-transition_mask), (nb_tracks, sequence_length*nb_states, nb_states)) - tf.math.reduce_sum(tf.math.log(tf.math.abs(tf.linalg.diag_part(tf.transpose(reshaped_Next_coefs, [1, 2, 3, 4, 0, 5])))+1e-20), axis = (-2,-1))
     
     max_transition_LPs = tf.reduce_max(transition_LPs, axis = 1, keepdims = True)
     transition_Ps = tf.math.exp(transition_LPs - max_transition_LPs) 
@@ -1727,13 +1766,13 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     # Update the states
     transition_states = tf.reduce_sum(states[:,:,None] * transition_weights[:,:,:,None, None], 1)
     
-    transition_Next_coefs = tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_hidden_vars])
-    transition_Next_coefs = tf.reduce_sum(transition_Next_coefs*transition_weights[None, :,:,:,None], axis = 2)
+    transition_Next_coefs = tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_dims, nb_hidden_vars])
+    transition_Next_coefs = tf.reduce_sum(transition_Next_coefs*transition_weights[None, :,:,:,None, None], axis = 2)
     
     transition_Next_biases = tf.reshape(Next_biases, Next_biases.shape[:2]+[sequence_length*nb_states, nb_states, nb_dims])
     transition_Next_biases = tf.reduce_sum(transition_Next_biases*transition_weights[None, :,:,:,None], axis = 2)
     
-    transition_LPs = tf.math.log(tf.reduce_sum(transition_Ps, axis = 1)) + max_transition_LPs[:,0] + nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(transition_Next_coefs, [1, 2, 0, 3])), axis=-1)) + 1e-20)
+    transition_LPs = tf.math.log(tf.reduce_sum(transition_Ps, axis = 1)) + max_transition_LPs[:,0] + tf.reduce_sum(tf.math.log(tf.math.abs(tf.linalg.diag_part(tf.transpose(transition_Next_coefs, [1, 2, 3, 0, 4]))) + 1e-20), axis =  (-2,-1))
     
     stable_LPs = tf.reshape(all_LP, (nb_tracks, sequence_length* nb_states, nb_states))
     stable_weights = tf.reshape((1-transition_mask), (sequence_length* nb_states, nb_states))[None]
@@ -1741,7 +1780,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     
     stable_states = tf.reduce_sum(states[:,:,None] * stable_weights[:,:,:,None, None], 2)
     
-    stable_Next_coefs = tf.reduce_sum(tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_hidden_vars])*stable_weights[None,:,:,:,None], axis = 3)
+    stable_Next_coefs = tf.reduce_sum(tf.reshape(Next_coefs, Next_coefs.shape[:2]+[sequence_length*nb_states, nb_states, nb_dims, nb_hidden_vars])*stable_weights[None,:,:,:,None, None], axis = 3)
     stable_Next_biases = tf.reduce_sum(tf.reshape(Next_biases, Next_biases.shape[:2]+[sequence_length*nb_states, nb_states, nb_dims])*stable_weights[None,:,:,:,None], axis = 3)
     stable_segment_len = tf.reduce_sum(tf.reshape(segment_len, (nb_tracks, sequence_length*nb_states, nb_states))*stable_weights, axis = 2)
     
@@ -1773,9 +1812,9 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     saved_states = Next_states[:, :-nb_states*2]
     
     nb_prev_gaussians = Next_coefs.shape[0]
-    last_Next_coefs = tf.reshape(Next_coefs[:, :, -nb_states*2:], (nb_prev_gaussians, nb_tracks, 2, nb_states, nb_hidden_vars))
+    last_Next_coefs = tf.reshape(Next_coefs[:, :, -nb_states*2:], (nb_prev_gaussians, nb_tracks, 2, nb_states, nb_dims, nb_hidden_vars))
     last_Next_biases = tf.reshape(Next_biases[:, :, -nb_states*2:], (nb_prev_gaussians, nb_tracks, 2, nb_states, nb_dims))
-    last_LP = tf.reshape(new_LP[:, -nb_states*2:], (nb_tracks, 2, nb_states)) - nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(last_Next_coefs, [1, 2, 3, 0, 4])), axis=-1)) + 1e-20)
+    last_LP = tf.reshape(new_LP[:, -nb_states*2:], (nb_tracks, 2, nb_states)) - tf.math.reduce_sum(tf.math.log(tf.math.abs(tf.linalg.diag_part(tf.transpose(last_Next_coefs, [1, 2, 3, 4, 0, 5]))) + 1e-20), axis=(-2, -1))
     last_segment_len = tf.reshape(current_segment_len[:, -nb_states*2:], (nb_tracks, 2, nb_states))
     last_gamma_dist_mean = tf.reshape(current_gamma_dist_mean[:, -nb_states**2*2:], (nb_tracks, 2, nb_states, nb_states))
     last_gamma_dist_var = tf.reshape(current_gamma_dist_var[:, -nb_states**2*2:], (nb_tracks, 2, nb_states, nb_states))
@@ -1789,9 +1828,9 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     weight_last_P = tf.math.exp(weight_last_LP - tf.reduce_max(weight_last_LP, axis = 1, keepdims = True))
     last_weights = weight_last_P / tf.reduce_sum(weight_last_P, 1, keepdims = True)
     
-    reduced_last_Next_coefs = tf.reduce_sum(last_Next_coefs*last_weights[None,:,:,:,None], axis = 2)
+    reduced_last_Next_coefs = tf.reduce_sum(last_Next_coefs*last_weights[None,:,:,:,None,None], axis = 2)
     reduced_last_Next_biases = tf.reduce_sum(last_Next_biases*last_weights[None,:,:,:, None], axis = 2)
-    reduced_last_LPs = (tf.math.log(sum_last_P + 1e-100) + last_LP_max)[:,0] + nb_dims*tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(reduced_last_Next_coefs, [1, 2, 0, 3])), axis=-1))+1e-20)
+    reduced_last_LPs = (tf.math.log(sum_last_P + 1e-100) + last_LP_max)[:,0] + tf.math.reduce_sum(tf.math.log(tf.math.abs(tf.linalg.diag_part(tf.transpose(reduced_last_Next_coefs, [1, 2, 3, 0, 4])))+1e-20), axis = (-2, -1))
     reduced_last_segment_len = tf.reduce_sum(last_segment_len*last_weights, axis = 1)
     reduced_last_gamma_dist_mean = tf.reduce_sum(last_gamma_dist_mean*last_weights[:,:,:,None], axis = 1)
     reduced_last_gamma_dist_var = tf.reduce_sum((last_gamma_dist_var + (last_gamma_dist_mean - reduced_last_gamma_dist_mean[:,None])**2)*last_weights[:,:,:,None], axis = 1)
@@ -2070,7 +2109,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         transition_shapes_full, transition_rates_full = self.transition_param_function(
                 transition_shapes, transition_rates, density,
                 Fs, effective_ds, dts_TN, reference_dt, dtype)
-        transition_rates_full[0,0]
+        
         # ------------------------------------------------------------------
         # Dense one-hot operators that "flatten" the (S, S) state-pair axis
         # into the unrolled n_pairs = sequence_length * S**2 axis used by
@@ -2112,7 +2151,7 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         rec_biases_seq                  = reccurent_biases[1:]
         transition_hidden_var_coefs_seq = transition_hidden_var_coefs[1:]
         transition_biases_seq           = transition_biases[1:]
-                
+        
         flat_Log_seq        = flat_Log_full[1:]
         flat_trans_Log_seq  = flat_trans_Log_full[1:]
         transition_mean_seq = transition_mean_full[1:, :, :nb_states**2]
@@ -2176,9 +2215,10 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
                  All_states_ta, All_coefs_ta, All_biases_ta, All_LP_ta):
             
             # predicted state distribution BEFORE the cell update
-            log_w = LP - nb_dims * tf.math.log(
-                tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(Prev_coefs, [1, 2, 0, 3])), axis=-1))
-                + 1e-20)
+            log_w = LP - tf.math.reduce_sum(
+                tf.math.log(tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(Prev_coefs, [1, 2, 3, 0, 4])), axis=-1)
+                                        ) + 1e-20),
+                axis = -1)
             
             max_log_w = tf.reduce_max(log_w, 1, keepdims=True)
             w = tf.math.exp(log_w - max_log_w)
@@ -2224,12 +2264,13 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
             #    tf.math.abs(tf.reduce_prod(tf.linalg.diag_part(tf.transpose(Next_coefs, [1, 2, 0, 3])), axis=-1)) + 1e-20))[10:20]
             
             # masked update: only advance still-alive tracks
-            mask_coef   = mask_i[None, :, None, None]
+            mask_coef   = mask_i[None, :, None, None, None]
+            mask_bias   = mask_i[None, :, None, None]
             mask_scalar = mask_i[:, None]
             mask_state  = mask_i[:, None, None, None]
             
             Prev_coefs      = Next_coefs       * mask_coef   + Prev_coefs      * (1 - mask_coef)
-            Prev_biases     = Next_biases      * mask_coef   + Prev_biases     * (1 - mask_coef)
+            Prev_biases     = Next_biases      * mask_bias   + Prev_biases     * (1 - mask_bias)
             LP              = Next_LP          * mask_scalar + LP              * (1 - mask_scalar)
             segment_len     = Next_segment_len * mask_scalar + segment_len     * (1 - mask_scalar)
             gamma_dist_mean = Next_gamma_mean  * mask_scalar + gamma_dist_mean * (1 - mask_scalar)
@@ -2256,9 +2297,9 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         All_states = tf.transpose(All_states_ta.stack(),
                                   perm=[1, 0, 2, 3])[:, :, 0, :]
         All_coefs  = tf.transpose(All_coefs_ta.stack(),
-                                  perm=[2, 0, 3, 1, 4])
+                                  perm=[2, 0, 3, 4, 1, 5])
         All_biases = tf.transpose(All_biases_ta.stack(),
-                                  perm=[2, 0, 3, 1, 4])
+                                  perm=[2, 0, 3, 4, 1])
         All_LPs    = tf.transpose(All_LP_ta.stack(),
                                   perm=[1, 0, 2])
         All_states = All_states[:, sequence_length - 1:]
@@ -2266,69 +2307,66 @@ class Custom_RNN_layer(tf.keras.layers.Layer):
         return (Prev_coefs, Prev_biases, LP, segment_len,
                 gamma_dist_mean, gamma_dist_var,
                 All_states, All_coefs, All_biases, All_LPs, states)
-    
-    
+
 def marginalise_variable(All_coefs, All_biases, integrate_index):
     """
-    coefs = All_coefs[..., ::-1, :]
-    biases = All_biases[..., ::-1, :]
-    Given nb_gaussians=2 Gaussians characterised by coefficients and biases,
-    integrate (marginalise) over the hidden variable at `integrate_index`
-    using the Gaussian-product substitution.
-    
-    Parameters
-    ----------
-    coefs : ndarray, shape (..., 2, 2)
-        Coefficient matrix.  coefs[..., g, h] is the coefficient of
-        hidden variable h in Gaussian g.
-    biases : ndarray, shape (..., 2, D)
-        Bias vectors.  biases[..., g, d] is the bias of Gaussian g in
-        spatial dimension d.
-    integrate_index : int  (0 or 1)
-        Index of the hidden variable to integrate out.
-    
+    Integrates (marginalises) over the hidden variable `integrate_index` from
+    the two Gaussians (G = 2) that jointly describe (pos, ano), INDEPENDENTLY
+    per spatial dimension.
+
+    Expected shapes
+    ---------------
+    All_coefs  : (..., D, G, H)   e.g. (N, T, Q, D, G, H), with G = 2, H = 2.
+    All_biases : (..., D, G)      e.g. (N, T, Q, D, G).      <-- G now LAST
+
     Returns
     -------
-    remaining_coef : ndarray, shape (...)
-        Coefficient of the *remaining* hidden variable in the marginal
-        Gaussian.
-    remaining_bias : ndarray, shape (..., D)
-        Bias of the marginal Gaussian.
-    
-    The marginal distribution of the remaining variable x_k is:
-        P(x_k) ∝ exp(−½ (remaining_coef · x_k + remaining_bias)²)
-    so that  x_k_MAP = −remaining_bias / remaining_coef
-    and      Var(x_k) = 1 / remaining_coef²
+    coefs3  : (..., D, H)  marginal (integrate-independent) Gaussian coefs, per dim.
+    biases3 : (..., D)     its bias, per dim.
+    coefs4  : (..., D, H)  coefs of the Gaussian that carried the integrated var.
+    biases4 : (..., D)     its bias.
+    LogConstant : (...)    change-of-variables constant, summed over D.
     """
     keep_index = 1 - integrate_index
-    nb_dims = All_biases.shape[-1]
-    
-    C1 = All_coefs[..., 0:1, integrate_index]   # coef of var-to-integrate in G0
-    C2 = All_coefs[..., 1:, integrate_index]   # coef of var-to-integrate in G1
-    
-    # Normalise each Gaussian by its coefficient at integrate_index
-    # (same operation as in RNN_gaussian_product)
-    coefs1 = All_coefs[..., 0, :] / (C1 + 1e-30)
-    coefs2 = All_coefs[..., 1, :] / (C2 + 1e-30)
-    biases1 = All_biases[..., 0, :] / (C1 + 1e-30)
-    biases2 = All_biases[..., 1, :] / (C2 + 1e-30)
-    
-    var1 = 1.0 / (C1**2 + 1e-30)
-    var2 = 1.0 / (C2**2 + 1e-30)
+
+    # per-gaussian, per-dimension slices
+    coefs_g0 = All_coefs[..., 0, :]                 # (..., D, H)
+    coefs_g1 = All_coefs[..., 1, :]                 # (..., D, H)
+    C1 = All_coefs[..., 0, integrate_index]         # (..., D)  coef of int-var, G0
+    C2 = All_coefs[..., 1, integrate_index]         # (..., D)  coef of int-var, G1
+
+    biases_g0 = All_biases[..., 0]                  # (..., D)  G is now the LAST axis
+    biases_g1 = All_biases[..., 1]                  # (..., D)
+
+    # keepdim on H so the scalar-per-dim coef broadcasts against the H vector
+    C1_h = C1[..., None]                            # (..., D, 1)
+    C2_h = C2[..., None]                            # (..., D, 1)
+
+    # normalise each Gaussian by its integrated-variable coefficient
+    coefs1  = coefs_g0 / (C1_h + 1e-30)             # (..., D, H)
+    coefs2  = coefs_g1 / (C2_h + 1e-30)
+    biases1 = biases_g0 / (C1 + 1e-30)              # (..., D)  per-dim division
+    biases2 = biases_g1 / (C2 + 1e-30)
+
+    var1 = 1.0 / (C1_h**2 + 1e-30)                  # (..., D, 1)
+    var2 = 1.0 / (C2_h**2 + 1e-30)
     var3 = var1 + var2
-    std3 = np.sqrt(var3)
-    C1.shape
-    coefs2.shape
-    All_coefs.shape
-    coefs3 = (coefs1 - coefs2) / std3
-    biases3 = (biases1 - biases2)/std3
-    
+    std3 = np.sqrt(var3)                            # (..., D, 1)
+    std3_d = std3[..., 0]                           # (..., D)
+
+    coefs3  = (coefs1 - coefs2) / std3              # (..., D, H)
+    biases3 = (biases1 - biases2) / std3_d          # (..., D)
+
     var4 = var1 * var2 / var3
-    std4 = var4**0.5
-    coefs4 = (coefs1*var2 + coefs2*var1)/(var3*std4)
-    biases4 = (biases1*var2 + biases2*var1)/(var3*std4)
-    
-    LogConstant = -nb_dims*np.log(np.abs(C1*C2*std4*std3))[:,:,:,0]
+    std4 = var4**0.5                                # (..., D, 1)
+    std4_d = std4[..., 0]
+    var1_d, var2_d, var3_d = var1[..., 0], var2[..., 0], var3[..., 0]
+
+    coefs4  = (coefs1 * var2 + coefs2 * var1) / (var3 * std4)             # (..., D, H)
+    biases4 = (biases1 * var2_d + biases2 * var1_d) / (var3_d * std4_d)   # (..., D)
+
+    # per-dimension log-constant summed over the spatial axis
+    LogConstant = -np.sum(np.log(np.abs(C1 * C2 * std4_d * std3_d)), axis=-1)  # (...)
 
     return coefs3, biases3, coefs4, biases4, LogConstant
 
@@ -2337,132 +2375,74 @@ def extract_hidden_variables(All_coefs, All_biases, All_LPs, nb_dims, sequence_l
     Algorithm to estimate the distribution of the hidden variables at a given time step
     given the prior positions (online estimate, equivalent to filtering in the context 
     of Kalman filters). 
+    
+    Expected shapes
+    ---------------
+    All_coefs  : (N, T, Q, D, G, H)   G = 2, H = 2, Q = sequence_length*nb_states
+    All_biases : (N, T, Q, D, G)      
+    All_LPs    : (N, T, Q)
+
+    Returns (signature unchanged)
+    -----------------------------
+    pos_mean       : (N, T, D)
+    anomalous_mean : (N, T, nb_states, D)
+    position_std   : (N, T, D)
+    anomalous_std  : (N, T, nb_states, D)
     '''
-    All_coefs = np.array(All_coefs)
+    All_coefs  = np.array(All_coefs)
     All_biases = np.array(All_biases)
-    All_LPs = np.array(All_LPs)
+    All_LPs    = np.array(All_LPs)
     nb_tracks, track_len, nb_sequences = All_LPs.shape
-    nb_states = nb_sequences//sequence_length
-    
-    integrate_index = 0
-    coefs3, biases3, coefs4, biases4, LogConstant = marginalise_variable(All_coefs, All_biases, integrate_index)
-    
-    All_LPs_ano = All_LPs + LogConstant -nb_dims * np.log(np.abs(coefs4[..., integrate_index]) + 1e-30)
-    All_LPs_ano = All_LPs_ano.reshape((nb_tracks, track_len, sequence_length, nb_states)) 
-    ano_MAP = -biases3/coefs3[:, :, :, 1:]
+    nb_states = nb_sequences // sequence_length
+
+    # =========================== Anomalous variable =====================
+    integrate_index = 0                      # integrate out position -> keep ano
+    keep_index = 1 - integrate_index         # = 1
+    coefs3, biases3, coefs4, biases4, LogConstant = marginalise_variable(
+        All_coefs, All_biases, integrate_index)
+
+    # coefs4[..., integrate_index] : (N,T,Q,D) -> sum log over D (was nb_dims*log)
+    All_LPs_ano = (All_LPs + LogConstant
+                   - np.sum(np.log(np.abs(coefs4[..., integrate_index]) + 1e-30), axis=-1))
+    All_LPs_ano = All_LPs_ano.reshape((nb_tracks, track_len, sequence_length, nb_states))
+
+    # per-dimension MAP / variance of the anomalous variable
+    ano_MAP = -biases3 / coefs3[..., keep_index]                          # (N,T,Q,D)
     ano_MAP = ano_MAP.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
-    '''
-    ano_MAP.shape
-    ano_MAP[3, 50, 0]
-    reshaped_coefs3 = coefs3[:, :, :, 1:].reshape((nb_tracks, track_len, nb_states, sequence_length))
-    reshaped_coefs3.shape
-    reshaped_coefs3[3, :, 0]
-    ano_MAP[3, 50, :,:,0]
-    coefs3[3, 50]
-    coefs3.shape
-    [3, :, -6, 1:]
-    reshaped_coefs3[3, 50, 0]
-    All_LPs_ano[3, 50]
-    np.arange(30).reshape((10, 3))[:, 0]
-    '''
-    ano_var = 1/(coefs3[..., 1:]**2 + 1e-50)
-    ano_var = ano_var.reshape((nb_tracks, track_len, sequence_length, nb_states, 1))
-    w_ano = scipy_softmax(All_LPs_ano, axis=2)[..., None]  # (..., 1)
+    ano_var = 1.0 / (coefs3[..., keep_index]**2 + 1e-50)                  # (N,T,Q,D)
+    ano_var = ano_var.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
+
+    w_ano = scipy_softmax(All_LPs_ano, axis=2)[..., None]                 # (N,T,seq,nb_states,1)
     weighted_ano_MAP = ano_MAP * w_ano
-    anomalous_mean = np.sum(weighted_ano_MAP, axis=2)  # (tracks, time, nb states, nb dims)
+    anomalous_mean = np.sum(weighted_ano_MAP, axis=2)                     # (N,T,nb_states,D)
     weighted_ano_var_term1 = (ano_var + ano_MAP**2) * w_ano
     weighted_ano_var_term2 = ano_MAP * w_ano
-    anomalous_var = np.sum(weighted_ano_var_term1, axis = 2) - np.sum(weighted_ano_var_term2, axis=2)**2
+    anomalous_var = (np.sum(weighted_ano_var_term1, axis=2)
+                     - np.sum(weighted_ano_var_term2, axis=2)**2)
     anomalous_std = anomalous_var**0.5
 
-    integrate_index = 1
-    #coefs3, biases3, coefs4, biases4, LogConstant = marginalise_variable(All_coefs, All_biases, integrate_index)
-    All_LPs_pos = All_LPs - nb_dims * np.log(np.abs(All_coefs[..., integrate_index, integrate_index]) + 1e-30)
-    #All_LPs_pos = All_LPs_pos.reshape((nb_tracks, track_len, sequence_length, nb_states)) 
-    pos_MAP = - All_biases[..., 0, :]/All_coefs[..., 0, :1]
-    #pos_MAP = pos_MAP.reshape((nb_tracks, track_len, sequence_length, nb_states, nb_dims))
-    pos_var = 1/(All_coefs[..., 0, :1]**2 + 1e-50)
-    #pos_var = pos_var.reshape((nb_tracks, track_len, sequence_length, nb_states, 1))
-    
-    w_pos = scipy_softmax(All_LPs_pos, axis=2)[..., None]  # (..., 1)
+    # =============================== Position ===========================
+    integrate_index = 1                      # integrate out ano -> keep position
+    # normalise by the integrated (ano) coef of gaussian 1, per dim, summed over D
+    All_LPs_pos = (All_LPs
+                   - np.sum(np.log(np.abs(All_coefs[..., integrate_index, integrate_index]) + 1e-30),
+                            axis=-1))
+
+    pos_coef0 = All_coefs[..., 0, 0]                                     # (N,T,Q,D)  G0, pos var, per dim
+    pos_MAP = -All_biases[..., 0] / pos_coef0                           # (N,T,Q,D)  G0 bias (G last)
+    pos_var = 1.0 / (pos_coef0**2 + 1e-50)                              # (N,T,Q,D)
+
+    w_pos = scipy_softmax(All_LPs_pos, axis=2)[..., None]               # (N,T,Q,1)  softmax over Q
     weighted_pos_MAP = pos_MAP * w_pos
-    pos_mean = np.sum(weighted_pos_MAP, axis=2)  # (tracks, T, D)
+    pos_mean = np.sum(weighted_pos_MAP, axis=2)                         # (N,T,D)
     weighted_pos_var_term1 = (pos_var + pos_MAP**2) * w_pos
     weighted_pos_var_term2 = pos_MAP * w_pos
-    position_var = np.sum(weighted_pos_var_term1, axis = 2) - np.sum(weighted_pos_var_term2, axis=2)**2
+    position_var = (np.sum(weighted_pos_var_term1, axis=2)
+                    - np.sum(weighted_pos_var_term2, axis=2)**2)
     position_std = position_var**0.5
-    
-    # Estimate the mixture variance = E[Var] + Var[E]
-    return pos_mean, anomalous_mean, position_std, anomalous_std
-"""
-def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model, batch_size, sequence_length, motion_types):
-    '''
-    tracks = tf_tracks
-    dts = time_steps
-    
-    Sloppy estimate of the hidden variables given all the known positions. While
-    the proper way to do it is to integrate over all the hidden variables (very
-    feasible but a little complex), we do that by running pred_model.predict on
-    both the track and the inverse track and averaging the estimates resulting
-    from extract_hidden_variables
-    the filtering 
-    smoothing by running the filterings on both ends
-    
-    motion_types: list of booleans with nb_states elements, the element i is 1
-    if the state i is directed or 0 if the state i is confined.
-    '''
-    motion_types = np.array(motion_types)
-    is_first = np.ones(tracks.shape[0])
-    
-    nb_dims = tracks.shape[-1]
-    LPs, preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict((tracks, LocErrs, dts, masks, is_first), batch_size = batch_size)
-    
-    # transpose the shape and rate matrices for the hidden state inference on the reversed tracks
-    pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
-    pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
-    
-    inverse_dts = np.concatenate((dts[:, -1:], dts[:, :-1]), axis = 1)[:, ::-1] # the last time step of dts is a dummy value that must not be used
-    
-    LPs, preds_2, All_coefs_2, All_biases_2, All_LPs_2 = pred_model.predict((tracks[:, ::-1], LocErrs[:, ::-1], inverse_dts, masks[:,::-1], is_first), batch_size = batch_size)
-    
-    # restore the model so subsequent calls behave normally
-    pred_model.weights[7].assign(tf.transpose(pred_model.weights[7]))
-    pred_model.weights[8].assign(tf.transpose(pred_model.weights[8]))
 
-    pos_mean_1, anomalous_mean_1, position_std_1, anomalous_std_1 = extract_hidden_variables(All_coefs_1, All_biases_1, All_LPs_1, nb_dims, sequence_length)
-    pos_mean_2, anomalous_mean_2, position_std_2, anomalous_std_2 = extract_hidden_variables(All_coefs_2, All_biases_2, All_LPs_2, nb_dims, sequence_length)
-    
-    pos_mean_1 = pos_mean_1[:, 1:]
-    position_std_1 = position_std_1[:, 1:]
-    pos_mean_2 = pos_mean_2[:, :0:-1]
-    position_std_2 = position_std_2[:, :0:-1]
-    
-    # In case the motion type is directed, we need to inverse the sign of anomalous parameter 
-    # of the reversed track as it represents the drift
-    motion_type_sign = -1*(motion_types==1) + 1*(motion_types==0)
-    motion_type_sign = motion_type_sign[None,None,:,None]
-    
-    anomalous_mean_1 = anomalous_mean_1[:, 1:]
-    anomalous_std_1 = anomalous_std_1[:, 1:]
-    anomalous_mean_2 = motion_type_sign * anomalous_mean_2[:, :0:-1]
-    anomalous_std_2 = anomalous_std_2[:, :0:-1]
-    
-    def optimal_estimator(x1, x2, var1, var2):
-        w1 = 1 / var1
-        w2 = 1 / var2
-        return (w1 * x1 + w2 * x2) / (w1 + w2)
-    
-    position_mean = optimal_estimator(pos_mean_1, pos_mean_2, position_std_1**2, position_std_2**2)
-    position_std = (1/((1 / position_std_1**2 + 1 / position_std_2**2)))**0.5
-    
-    anomalous_mean = optimal_estimator(anomalous_mean_1, anomalous_mean_2, anomalous_std_1**2, anomalous_std_2**2)
-    anomalous_std = (1/((1 / anomalous_std_1**2 + 1 / anomalous_std_2**2)))**0.5
-    
-    mean_preds = (preds_1 + preds_2[:,::-1])/2
-    
-    # The anomalous variable cannot be averaged along the state axis to avoid mixing velocity vector and potential well position which have different orders of magnitude
-    return position_mean, position_std, anomalous_mean, anomalous_std, mean_preds
-"""
+    return pos_mean, anomalous_mean, position_std, anomalous_std
+
 def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
                                     batch_size, sequence_length, motion_types, reference_dt):
     '''
@@ -2505,6 +2485,8 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     LPs, preds_1, All_coefs_1, All_biases_1, All_LPs_1 = pred_model.predict(
         (tracks, LocErrs, dts, masks, is_first), batch_size=batch_size)
     
+    All_coefs_1.shape
+    All_biases_1.shape
     # ------------------------------------------------------------------
     # Reverse pass — transpose the Gamma shape/rate matrices so that
     # transitions s -> s' in the original direction become s' -> s.
@@ -2585,18 +2567,6 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     anomalous_mean_2 = motion_type_sign * anomalous_mean_2[:, :0:-1]
     anomalous_std_2  = anomalous_std_2[:, :0:-1]
     
-    plt.plot(np.sum(anomalous_mean_1[35, :, 1]**2, axis =1)**0.5)
-    plt.plot(np.sum(anomalous_mean_2[35, :, 1]**2, axis =1)**0.5)
-    
-    plt.errorbar(np.arange(118), np.sum(anomalous_mean_1[35, :, 1]**2, axis =1)**0.5, yerr=np.mean(anomalous_std_1[35, :, 1], 1))
-    anomalous_std_1.shape
-    
-    '''
-    anomalous_mean_1[1, :, 0]
-    anomalous_mean_2[1, :, 0]
-    anomalous_std_1[0, 60]
-    anomalous_std_2[0, 60]
-    '''
     # ------------------------------------------------------------------
     # Precision-weighted fusion (smoothing)
     # ------------------------------------------------------------------
@@ -2617,6 +2587,7 @@ def extract_smooth_hidden_variables(tracks, LocErrs, dts, masks, pred_model,
     #   - velocity (dt-independent) for directed states
     #   - well-anchor position       for confined states
     return position_mean, position_std, anomalous_mean, anomalous_std, mean_preds
+
 
 
 class Final_layer(tf.keras.layers.Layer):
@@ -2653,7 +2624,6 @@ class Final_layer(tf.keras.layers.Layer):
                                                                  biases,
                                                                  self.sequence_phase_1,
                                                                  [[], []],
-                                                                 nb_dims = nb_dims,
                                                                  dtype = self.dtype)
             LP += LC
         
@@ -2707,7 +2677,7 @@ def simple_RNN_gaussian_product(C1, C2, current_hidden_var_coefs_1, current_hidd
     
     return current_coefs3, current_coefs4, next_coefs3, next_coefs4
 
-def get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_hidden_vars, dtype):
+def get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_hidden_vars, blur_ratio, dtype):
     '''
     Function that gets the sequences of integration of the hidden variables: Determined by the indexes to eliminate the coefficents and perform the recursive integration process
     
@@ -2728,17 +2698,16 @@ def get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_
     def LocErr_function(LocErrs, LocErr_param):
         return LocErrs
     dts = np.ones((1,2))
-    hidden_var_coefs, _, _, _, initial_hidden_var_coefs, _, _, _,  transition_hidden_var_coefs, _, _, integration_variable_index, _, _, _ = constraint_function(params, initial_params, LocErrs, dts, nb_dims, 1., LocErr_function, dtype)
+    hidden_var_coefs, _, _, _, initial_hidden_var_coefs, _, _, _,  transition_hidden_var_coefs, _, _, integration_variable_index, _, _, _ = constraint_function(params, initial_params, LocErrs, dts, nb_dims, 1., LocErr_function, blur_ratio, dtype)
     hidden_var_coefs = hidden_var_coefs[0]
     transition_hidden_var_coefs = transition_hidden_var_coefs[0]
     
-    recurrent_current_hidden_var_coefs = np.copy(hidden_var_coefs[:,0,0,:nb_hidden_vars])
-    recurrent_next_hidden_var_coefs = np.copy(hidden_var_coefs[:,0,0,nb_hidden_vars:])
+    recurrent_current_hidden_var_coefs = np.copy(hidden_var_coefs[:,0,0,0,:nb_hidden_vars])
+    recurrent_next_hidden_var_coefs = np.copy(hidden_var_coefs[:,0,0,0,nb_hidden_vars:])
+    current_hidden_var_coefs = hidden_var_coefs[:,0,0,0,:nb_hidden_vars]
+    next_hidden_var_coefs = hidden_var_coefs[:,0,0,0,nb_hidden_vars:]
     
-    current_hidden_var_coefs = hidden_var_coefs[:,0,0,:nb_hidden_vars]
-    next_hidden_var_coefs = hidden_var_coefs[:,0,0,nb_hidden_vars:]
-            
-    current_initial_hidden_var_coefs = initial_hidden_var_coefs[:,0,0,:nb_hidden_vars]
+    current_initial_hidden_var_coefs = initial_hidden_var_coefs[:,0,0,0,:nb_hidden_vars]
     next_initial_hidden_var_coefs = tf.zeros((nb_hidden_vars, nb_hidden_vars), dtype = dtype) # these coefs must equal 0 as the initial gaussians must only depend on the fist set of hidden states
     
     current_hidden_var_coefs = np.concatenate((current_initial_hidden_var_coefs, current_hidden_var_coefs), axis = 0)
@@ -3023,8 +2992,8 @@ def get_sequences(params, initial_params, constraint_function, nb_gaussians, nb_
             next_hidden_var_coefs = np.delete(next_hidden_var_coefs, non_zero_gaussian_IDs[-1], 0)
             current_nb_gaussians += -1
     
-    current_hidden_var_coefs = np.concatenate((current_hidden_var_coefs, transition_hidden_var_coefs[:, 0,0]), 0)
-    next_hidden_var_coefs = np.concatenate((next_hidden_var_coefs, transition_hidden_var_coefs[:, 0,0]*0), 0)
+    current_hidden_var_coefs = np.concatenate((current_hidden_var_coefs, transition_hidden_var_coefs[:, 0,0,0]), 0)
+    next_hidden_var_coefs = np.concatenate((next_hidden_var_coefs, transition_hidden_var_coefs[:, 0,0,0]*0), 0)
     current_nb_gaussians = current_hidden_var_coefs.shape[0]
     
     saved_Gaussians = current_hidden_var_coefs
@@ -3161,7 +3130,49 @@ def transition_param_function(transition_shapes, transition_rates, density, Fs,e
     return new_transition_shapes, new_transition_rates
 
 
+class IsfirstMaskLayer(tf.keras.layers.Layer):
+    """Element-wise   init_val * isfirst + prev_val * (1 - isfirst)
+    with correct broadcasting for tensors of various ranks.
+    """
+    def __init__(self, **kwargs):
+        """rank: rank of the value tensors (init_val / prev_val)."""
+        super().__init__(**kwargs)
 
+    def call(self, init_val, prev_val, isfirst):
+        return init_val * isfirst + prev_val * (1 - isfirst)
+
+class CarryoverAssignLayer(tf.keras.layers.Layer):
+    def __init__(self, carryout_variables, **kwargs):
+        """
+        Args:
+            carryout_variables: list of tf.Variables (trainable=False) 
+                                to assign new values to.
+        """
+        super().__init__(**kwargs)
+        self.carryout_variables = carryout_variables
+
+    def call(self, output, new_states):
+        """
+        Args:
+            output: the tensor to pass through unchanged (e.g. final output).
+            new_states: list of tensors, same order as carryout_variables,
+                        whose values will be assigned to the variables.
+        """
+        assign_ops = []
+        for var, state in zip(self.carryout_variables, new_states):
+            assign_ops.append(var.assign(tf.stop_gradient(state)))
+
+        with tf.control_dependencies(assign_ops):
+            return tf.identity(output)
+
+def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (None, 1)
+    #print(y_pred)
+    
+    max_LP = tf.math.reduce_max(y_pred, 1, keepdims = True)
+    reduced_LP = y_pred - max_LP
+    pred = tf.math.log(tf.math.reduce_sum(tf.math.exp(reduced_LP), 1, keepdims = True)) + max_LP
+    
+    return - tf.math.reduce_mean(pred) # sum over the spatial dimensions axis
 
 def get_model_raw_params(model, track_segmentation = True, return_dict = False):
     '''
@@ -3202,15 +3213,15 @@ def build_segment_model(track_len, # maximum number of time points in the input 
                 vary_transition_shapes = False,
                 vary_transition_rates = True, 
                 nb_LocErr_dims = 0,
+                blur_ratio = 1,
                 LocErr_type = 'Linear'):
     
     # Defining the hyperparameters of the model    
     nb_obs_vars = 1 # number of dependend variables (the x, y, z dimension do not account as dependent variables in our model so keep this to 1)
-    nb_independent_vars = nb_dims # This accounts for variables that are independ and which follow the same relationships (e.g. the spatial dimensions in tracking). 
     nb_hidden_vars = 2
     nb_gaussians = nb_obs_vars + nb_hidden_vars
     
-    inputs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_independent_vars), name = 'tracks', dtype = dtype)
+    inputs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_dims), name = 'tracks', dtype = dtype)
     if nb_LocErr_dims>0:
         input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_LocErr_dims), name = 'Localization errors', dtype = dtype)
     else:
@@ -3232,21 +3243,21 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     input_dts = all_inputs[2]
     input_mask = tf.constant(all_inputs[3], dtype = dtype)
     input_isfirst = tf.constant(all_inputs[4], dtype = dtype)
-    
+    inputs.shape
     inputs = tf.constant(inputs, dtype=dtype)
     input_LocErrs = tf.constant(input_LocErrs, dtype=dtype)
     input_dts = tf.constant(input_dts, dtype=dtype)
     input_mask = tf.constant(input_mask, dtype=dtype)
     input_isfirst = tf.constant(input_isfirst, dtype=dtype)
-
     '''
-    reshaped_inputs = tf.keras.layers.Lambda(lambda x: x[:, None, :, None, None, :], dtype = dtype)(inputs)
+    reshaped_inputs = tf.keras.layers.Lambda(lambda x: x[:, None, :, None, :, None], dtype = dtype)(inputs)
     transposed_inputs = transpose_layer(dtype = dtype)(reshaped_inputs, perm = [2, 1, 0, 3, 4, 5])
-    
+
     Init_layer = Initial_layer_constraints(nb_states,
                                            nb_gaussians,
                                            nb_obs_vars,
                                            nb_hidden_vars,
+                                           nb_dims,
                                            params,
                                            initial_params,
                                            initial_fractions,
@@ -3259,6 +3270,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
                                            sequence_length = sequence_length,
                                            carryover = True,
                                            LocErr_type = LocErr_type,
+                                           blur_ratio = blur_ratio,
                                            dtype = dtype)
     
     #self = Init_layer
@@ -3266,14 +3278,14 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
     
     softmax_inv_Fractions = Init_layer.initial_fractions
-    log_ds = Init_layer.param_vars[:, 1]
-    anomalous_factors = Init_layer.param_vars[:, 2]
-    isdir = Init_layer.param_vars[:, 4]
+    log_ds = Init_layer.param_vars[:, 0]
+    anomalous_factors = Init_layer.param_vars[:, 1]
+    isdir = Init_layer.param_vars[:, -1]
     
     Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
     
     first_mask_layer = IsfirstMaskLayer(dtype = dtype)
-    Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None])
+    Prev_coefs = first_mask_layer(Prev_coefs, Init_layer.carryout_coefs, input_isfirst[None, :, None, None, None])
     Prev_biases = first_mask_layer(Prev_biases, Init_layer.carryout_biases, input_isfirst[None, :, None, None])
     LP = first_mask_layer(LP, Init_layer.carryout_LP, input_isfirst[:, None])
     
@@ -3281,9 +3293,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
     sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
     
     layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, carryover = True, dtype = dtype)
-    #self=layer
-    # self = model.layers[14]
-    
+    #self = layer
     Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_motion_states, All_coefs, All_biases, All_LPs, motion_states = layer(sliced_inputs, input_dts, reference_dt, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir, isfirst = input_isfirst)
     
     states = [Prev_coefs, Prev_biases, LP, All_motion_states, motion_states]
@@ -3296,7 +3306,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
                                                                layer.carryout_gamma_dist_var],
                                            dtype=dtype)
     
-    F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
+    F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_dims, sequence_length = sequence_length, dtype = dtype)
     outputs, All_states = F_layer(states)
     
     outputs = carryover_layer(outputs, [Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var])
@@ -3318,101 +3328,7 @@ def build_segment_model(track_len, # maximum number of time points in the input 
         cutoff_batch_treshhold=0.5)
     model.fit(seq, epochs = 5)
     '''
-    
     return model, pred_model
-
-def build_model(track_len, # maximum number of time points in the input tracks 
-                nb_states, # Number of states of their model
-                params, # recurrent parameters of the model
-                initial_params, # initial parameters of the model
-                transition_rates, # transition rates for each pair of states (gamma distributed transition lifetimes)
-                transition_shapes, # transition shapes for each pair of states (gamma distributed transition lifetimes)
-                initial_fractions, 
-                batch_size, # number of tracks analysed at the same time
-                reference_dt,
-                nb_dims = 2, # Number of dimensions of the tracks
-                sequence_length = 3, # sequence of the previous states that are considered without alterations (computation time and memory usage proportional to sequence_length)
-                max_linking_distance = 3, # Maximum linking distance or standard deviation for the expected misslinking distance.
-                estimated_density = 0.001, # Estimated density of the sample.
-                vary_params = None,
-                vary_initial_params = None,
-                vary_initial_fractions = None,
-                vary_transition_shapes = None,
-                vary_transition_rates = None,
-                nb_LocErr_dims = 1,
-                LocErr_type = 'Linear'):
-    
-    # Defining the hyperparameters of the model
-    dtype = 'float64'
-    
-    nb_obs_vars = 1 # number of dependend variables (the x, y, z dimension do not account as dependent variables in our model so keep this to 1)
-    nb_independent_vars = nb_dims # This accounts for variables that are independ and which follow the same relationships (e.g. the spatial dimensions in tracking). 
-    nb_hidden_vars = 2
-    nb_gaussians = nb_obs_vars + nb_hidden_vars
-    
-    inputs = tf.keras.Input(batch_shape=(batch_size, 1, track_len,1, 1, nb_independent_vars), dtype = dtype)
-    if nb_LocErr_dims>0:
-        input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len, nb_LocErr_dims), name = 'Localization errors', dtype = dtype)
-    else:
-        input_LocErrs = tf.keras.Input(batch_shape=(batch_size, track_len), name = 'Localization errors', dtype = dtype)
-    input_dts = tf.keras.Input(batch_shape=(batch_size, track_len+1), name = 'frame durations', dtype = dtype)
-    input_mask = tf.keras.Input(batch_shape = (batch_size, track_len), dtype = dtype)
-    
-    #inputs = tracks
-    #input_mask = masks
-    
-    transposed_inputs = transpose_layer(dtype = dtype)(inputs, perm = [2, 1, 0, 3, 4, 5])
-    
-    Init_layer = Initial_layer_constraints(nb_states,
-                                           nb_gaussians,
-                                           nb_obs_vars,
-                                           nb_hidden_vars,
-                                           params,
-                                           initial_params,
-                                           initial_fractions,
-                                           max_linking_distance,
-                                           constraint_function,
-                                           reference_dt = reference_dt,
-                                           vary_params = vary_params,
-                                           vary_initial_params = vary_initial_params,
-                                           vary_initial_fractions = vary_initial_fractions,
-                                           sequence_length = sequence_length,
-                                           LocErr_type = LocErr_type,
-                                           dtype = dtype)
-    
-    tensor1, initial_states = Init_layer(transposed_inputs, input_LocErrs, input_dts)
-    
-    softmax_inv_Fractions = Init_layer.initial_fractions
-    log_ds = Init_layer.param_vars[:, 1]
-    anomalous_factors = Init_layer.param_vars[:, 2]
-    isdir = Init_layer.param_vars[:, 4]
-    
-    Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases = initial_states
-    
-    sliced_inputs = tf.keras.layers.Lambda(lambda x: x[1:], dtype = dtype)(transposed_inputs)
-    sliced_mask = tf.keras.layers.Lambda(lambda x: x[:, 1:], dtype = dtype)(input_mask)
-    
-    layer = Custom_RNN_layer(batch_size, transition_shapes, transition_rates, estimated_density, nb_states, Init_layer.recurrent_sequence_phase_1, Init_layer.recurrent_sequence_phase_2, Init_layer.transition_sequence, transition_param_function, sequence_length = sequence_length, vary_transition_shapes = vary_transition_shapes, vary_transition_rates = vary_transition_rates, dtype = dtype)
-    
-    isfirst = tf.ones((batch_size), dtype = dtype)
-    Prev_coefs, Prev_biases, LP, segment_len, gamma_dist_mean, gamma_dist_var, All_states       , All_coefs, All_biases, All_LPs,        states = layer(sliced_inputs, input_dts, reference_dt, sliced_mask, Prev_coefs, Prev_biases, LP, Log_factors, transition_Log_factors, reccurent_obs_var_coefs, reccurent_hidden_var_coefs, reccurent_next_hidden_var_coefs, reccurent_biases, transition_hidden_var_coefs, transition_biases, log_ds, softmax_inv_Fractions, anomalous_factors, isdir, isfirst = isfirst)
-
-    F_layer = Final_layer(Init_layer.final_sequence_phase_1, nb_dims = nb_independent_vars, sequence_length = sequence_length, dtype = dtype)
-    outputs, All_states = F_layer([Prev_coefs, Prev_biases, LP, All_states, states])
-    
-    model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask), outputs=outputs, name="Diffusion_model")
-    pred_model = tf.keras.Model(inputs=(inputs, input_LocErrs, input_dts, input_mask), outputs=(All_states, All_coefs, All_biases, All_LPs), name="Diffusion_model")
-    
-    return model, pred_model
-
-def MLE_loss(y_true, y_pred): # y_pred = log likelihood of the tracks shape (None, 1)
-    #print(y_pred)
-    
-    max_LP = tf.math.reduce_max(y_pred, 1, keepdims = True)
-    reduced_LP = y_pred - max_LP
-    pred = tf.math.log(tf.math.reduce_sum(tf.math.exp(reduced_LP), 1, keepdims = True)) + max_LP
-    
-    return - tf.math.reduce_mean(pred) # sum over the spatial dimensions axis
 
 class get_parameters(tf.keras.callbacks.Callback):
     def __init__(self, track_segmentation = True, layer_name='params'):
@@ -3445,7 +3361,7 @@ class get_parameters(tf.keras.callbacks.Callback):
         
         model_types = weights[0][:, -1].numpy().astype(int)
         model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-        params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4], 4)), 'Localization errors': list(np.round(np.exp(weights[0][:, 0]),3)), 'd': list(np.round(np.exp(weights[0][:, 1]), 3)), 'anomalous variation': list(np.round(np.exp(weights[0][:, 3]), 5)), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
+        params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 1])*(1-weights[0][:, -1]) + 2**0.5*tf.exp(weights[0][:, 1])*weights[0][:, -1], 4)), 'Localization errors': list(np.round(np.exp(weights[0][:, 3:-1]),3)), 'd': list(np.round(np.exp(weights[0][:, 0]), 3)), 'anomalous variation': list(np.round(np.exp(weights[0][:, 2]), 5)), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
         print(params)
 
 def get_model_params(model, track_segmentation = True):
@@ -3551,7 +3467,6 @@ class WarmupLearningRateSchedule(LearningRateSchedule):
 
 def logit(x):
     return -np.log(1/x-1)
-
 
 def segment_tracks(track_list, LocErr_list, dt_list, batch_size, segment_length=20, min_segment_length=4, cutoff_batch_treshhold = 0.5, shuffle = False):
     """
@@ -3665,9 +3580,6 @@ Key changes vs. the original:
   * The hot inner loop (copy segment, pad with last value, write mask) is
     compiled with @njit(cache=True).
 """
-
-import numpy as np
-from numba import njit
 
 @njit(cache=True)
 def _segment_tracks_core(
@@ -3968,41 +3880,6 @@ class TrackSegmentSequence(tf.keras.utils.Sequence):
             self.tracks, self.LocErrs, self.dts, self.masks, self.isfirsts = segment_tracks(
                 self.track_list, self.batch_size, self.segment_length,
                 self.min_segment_length, self.cutoff_batch_treshhold, self.shuffle)
-
-class IsfirstMaskLayer(tf.keras.layers.Layer):
-    """Element-wise   init_val * isfirst + prev_val * (1 - isfirst)
-    with correct broadcasting for tensors of various ranks.
-    """
-    def __init__(self, **kwargs):
-        """rank: rank of the value tensors (init_val / prev_val)."""
-        super().__init__(**kwargs)
-
-    def call(self, init_val, prev_val, isfirst):
-        return init_val * isfirst + prev_val * (1 - isfirst)
-
-class CarryoverAssignLayer(tf.keras.layers.Layer):
-    def __init__(self, carryout_variables, **kwargs):
-        """
-        Args:
-            carryout_variables: list of tf.Variables (trainable=False) 
-                                to assign new values to.
-        """
-        super().__init__(**kwargs)
-        self.carryout_variables = carryout_variables
-
-    def call(self, output, new_states):
-        """
-        Args:
-            output: the tensor to pass through unchanged (e.g. final output).
-            new_states: list of tensors, same order as carryout_variables,
-                        whose values will be assigned to the variables.
-        """
-        assign_ops = []
-        for var, state in zip(self.carryout_variables, new_states):
-            assign_ops.append(var.assign(tf.stop_gradient(state)))
-
-        with tf.control_dependencies(assign_ops):
-            return tf.identity(output)
 
 def Model_finder(track_list,
                  reference_dt,
@@ -4369,6 +4246,7 @@ def build_abrupt_directed_motion_changes_model(segment_length, # maximum number 
                                            nb_gaussians,
                                            nb_obs_vars,
                                            nb_hidden_vars,
+                                           nb_dims,
                                            params,
                                            initial_params,
                                            initial_fractions,

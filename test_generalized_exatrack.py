@@ -65,25 +65,26 @@ tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_tr
     nb_burning_steps=0,
     bleaching_rate = 0.0001)
 
+track_list = [tracks[i, all_masks[i].astype(bool), None]  for i in range(len(tracks))]
+# LocErr_list and dt_list can be set to None if they are assumed to be constant
+LocErr_list = [all_LocErrs[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
+# LocErr_list = None 
+dt_list = [all_dts[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
+
+
 # Plot tracks
 plt.figure(figsize = (15, 15))
 lim = 2 # MreB
-nb_rows = 4
-IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
+nb_rows = 6
 for i in range(nb_rows):
     for j in range(nb_rows):
         ID = i*nb_rows+j #IDs[i*nb_rows+j]
-        track = tracks[ID]
+        track = track_list[ID][:, 0]
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i]]
         plt.plot(np.arange(len(track))*0.02 + lim*j, track[:,0], ':k', alpha = 0.5)
         plt.scatter(np.arange(len(track))*0.02 + lim*j, track[:,0] , c = cm.jet(np.linspace(0,1,len(track))), s = 7)
 plt.gca().set_aspect('equal', adjustable='box')
 
-track_list = [tracks[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
-# LocErr_list and dt_list can be set to None if they are assumed to be constant
-LocErr_list = [all_LocErrs[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
-# LocErr_list = None 
-dt_list = [all_dts[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 
 batch_size = 20
 
@@ -93,14 +94,24 @@ batch_size = 20
 # Here, we are going to run the model with LocErr_type = 'Linear' so the localization error parameter should be initialized at 1
 
 nb_obs_vars = 1
-nb_hidden_vars = 3
+nb_hidden_vars = 2
 nb_dims = 1
 integration_variable_index = 1
 
 nb_states = 2
-initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*4 - 2
+initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*0.01
 params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + 
-                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*4 - 2
+                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*0.01
+
+H = nb_hidden_vars
+O = nb_obs_vars
+o0 = 0
+o0 += H * H
+o0 += H*(H+1)//2
+o0 += O * H
+o0 += O*(O+1)//2
+
+params[:, o0:o0+O+H] +=1
 
 # Equal initial fractions
 initial_fractions = np.array([[0]*nb_states], dtype='float64')
@@ -164,7 +175,7 @@ current_constraint_function(params, initial_params, LocErrs, dts,
 nb_batches = len(seq)
 
 #all_masks = masks
-learning_rate = 0.01
+learning_rate = 0.05
 nb_batches
 epochs = 150
 epoch_decay = 50
@@ -271,7 +282,7 @@ for i in range(nb_rows):
     for j in range(nb_rows):
         ID = i*nb_rows+j #IDs[i*nb_rows+j]
         mask = masks[ID]
-        track = tracks[ID, mask.astype(bool)]
+        track = tracks[ID, mask.astype(bool), 0]
         print(len(track))
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i]]
         p = preds[ID, mask.astype(bool)]
@@ -281,24 +292,46 @@ for i in range(nb_rows):
 plt.gca().set_aspect('equal', adjustable='box')
 
 
-plt.figure(figsize = (15, 15))
-plt.title('ExaTrack state predictions')
-lim = 2.2 # MreB
-nb_rows = 6
-#IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
-for i in range(nb_rows):
-    for j in range(nb_rows):
-        ID = i*nb_rows+j #IDs[i*nb_rows+j]
-        mask = masks[ID]
-        track = tracks[ID, mask.astype(bool)]
-        print(len(track))
-        track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
-        p = preds[ID, mask.astype(bool)]
-        p = np.clip(p, 0, 1)
-        plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
-        plt.scatter(track[:,0], track[:,1] , c = p@colors, s = 7)
-        plt.scatter(track[0,0], track[0,1] , c = 'k', s = 3, marker = 'x')
-plt.gca().set_aspect('equal', adjustable='box')
+
+fc = exatrack.MCRolloutForecaster(pred_model)
+self = fc
+
+tracks, dts, masks = (tracks[:batch_size], time_steps[:batch_size], masks[:batch_size])
+
+# # ---- horizon-1 validation ----
+ym, yc, sp = fc.one_step_predictive_y(tracks, dts, masks)
+
+# print("analytic y_mean :", ym[:, 0])
+# print("MC       y_mean :", mc['y_mean'][:, 0])
+# print("analytic y_std  :", np.sqrt(yc[:, range(fc.O), range(fc.O)]))
+# print("MC       y_std  :", mc['y_std'][:, 0])
+#
+# ---- multi-step forecast ----
+horizon = 3
+out = fc.rollout(tracks, dts, masks, horizon=horizon, nb_particles=100)
+
+
+plt.figure()
+ID = 13 #IDs[i*nb_rows+j]
+mask = masks[ID]
+track = tracks[ID, mask.astype(bool), 0]
+print(len(track))
+p = preds[ID, mask.astype(bool)]
+p = np.clip(p, 0, 1)
+plt.plot(np.arange(len(track)), track[:,0])
+y_mean = out['y_mean'][ID, :, 0, 0]
+y_std = out['y_std'][ID, :, 0, 0]
+out['x_mean'].shape
+#plt.errorbar(np.arange(len(track), len(track)+1), ym[ID, 0], yerr=yc[ID, 0])
+plt.plot([len(track), len(track)], [ym[ID, 0, 0] + yc[ID, 0, 0], ym[ID, 0, 0] - yc[ID, 0, 0]])
+
+plt.errorbar(np.arange(len(track), len(track)+horizon), y_mean, yerr=y_std)
+
+
+
+
+
+
 
 '''
 Comparison to exatrack fitting
@@ -546,9 +579,19 @@ nb_dims = 1
 integration_variable_index = 1
 
 nb_states = 3
-initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*4 - 2
+initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*0.01
 params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + 
-                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*4 - 2
+                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*0.01
+
+H = nb_hidden_vars
+O = nb_obs_vars
+o0 = 0
+o0 += H * H
+o0 += H*(H+1)//2
+o0 += O * H
+o0 += O*(O+1)//2
+
+params[:, o0:o0+O+H] +=1
 
 # Equal initial fractions
 initial_fractions = np.array([[0]*nb_states], dtype='float64')
@@ -808,6 +851,9 @@ plt.gca().set_aspect('equal', adjustable='box')
 
 
 
+
+
+
 '''
 Analysis of the bacteria tracks
 '''
@@ -831,6 +877,8 @@ sys.path.insert(0, rootdir)
 #import exatrack_var_shape as exatrack
 import generalized_exatrack as exatrack
 from glob import glob
+
+5*tf.math.exp(-3.)+1
 
 track_len = 200
 reference_dt = 1                 # Time interval between frames (seconds)
@@ -873,7 +921,10 @@ plt.gca().set_aspect('equal', adjustable='box')
 
 # LocErr_list and dt_list can be set to None if they are assumed to be constant
 
-track_list = [track[:,:] for track in track_list]
+len(track_list)
+track=track_list[0]
+#track_list = [track[:,:,None] - track[:1,:,None] + np.random.normal(0, 1, (1,2,1)) for track in track_list]
+track_list = [track[:,None,:] - track[:1,None,:] + np.random.normal(0, 1, (1,1,2)) for track in track_list]
 track_list[0].shape
 
 LocErr_list = None
@@ -881,7 +932,7 @@ LocErr_list = None
 dt_list = [np.concatenate((frame_list[i][1:] - frame_list[i][:-1], [1])) for i in range(len(track_list))]
 
 
-batch_size = 20
+batch_size = 50
 
 # Prepare parameters for a 4 states model
 
@@ -893,10 +944,23 @@ nb_hidden_vars = 3
 nb_dims = 2
 integration_variable_index = 1
 
-nb_states = 3
+nb_states = 5
 initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*4 - 2
 params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + 
                             nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*4 - 2
+initial_params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + nb_hidden_vars)*0.05
+params = np.random.rand(nb_states, nb_hidden_vars * (nb_hidden_vars+1)//2 + 
+                            nb_hidden_vars * nb_obs_vars + 2 * (nb_obs_vars + nb_hidden_vars) + 20)*0.05
+
+H = nb_hidden_vars
+O = nb_obs_vars
+o0 = 0
+o0 += H * H
+o0 += H*(H+1)//2
+o0 += O * H
+o0 += O*(O+1)//2
+
+params[:, o0:o0+O+H] +=1
 
 # Equal initial fractions
 initial_fractions = np.array([[0]*nb_states], dtype='float64')
@@ -950,8 +1014,9 @@ dtype = 'float64'
 input_mask = tf.constant(all_inputs[3], dtype = dtype)
 input_isfirst = tf.constant(all_inputs[4], dtype = dtype)
 
-
 current_constraint_function = exatrack.constraint_function_arbitrary_KF(nb_hidden_vars, nb_obs_vars, integration_variable_index)
+#current_constraint_function = exatrack.constraint_function_KF_diag_Q_R(nb_hidden_vars, nb_obs_vars, integration_variable_index)
+
 #self = current_constraint_function
 current_constraint_function(params, initial_params, LocErrs, dts,
          nb_dims, reference_dt, 0, dtype)
@@ -959,17 +1024,16 @@ current_constraint_function(params, initial_params, LocErrs, dts,
 nb_batches = len(seq)
 
 #all_masks = masks
-learning_rate = 0.01
+learning_rate = 0.005
 nb_batches
-epochs = 150
-epoch_decay = 50
+epochs = 200
+epoch_decay = 100
 decay_threshold = epoch_decay*nb_batches
 verbose = 1
 
 # Compute the required decay rate to decay the learning rate by a factor decay_ratio
 decay_ratio = 0.001 
 decay_rate = - np.log(decay_ratio)/((epochs - epoch_decay) * nb_batches)
-
 
 model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks
                 nb_states, # Number of states of their model
@@ -991,7 +1055,7 @@ model, pred_model = exatrack.build_segment_model(segment_length, # maximum numbe
                 nb_LocErr_dims = 1,
                 LocErr_type = 'Linear')
 
-device = '/CPU:0'
+device = '/GPU:0'
 verbose = 1
 print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
 
@@ -1005,6 +1069,10 @@ model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
 
 with tf.device(device):
     history = model.fit(seq, epochs = epochs, callbacks=[], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
+
+186.6019
+
+model.layers[14].step
 
 plt.figure()
 plt.plot(history.history['loss'])
@@ -1040,6 +1108,10 @@ _, pred_model = exatrack.build_segment_model(max_track_len, # maximum number of 
                 nb_LocErr_dims = 1,
                 LocErr_type = 'Linear')
 
+pred_model.set_weights(weights)
+
+pred_model.layers[14].step = 1000
+
 LPs, preds, All_coefs, All_biases, All_LPs = pred_model.predict(seq_full)
 
 tracks = np.concatenate([seq_full[i][0][0] for i in range(len(seq_full))], 0)
@@ -1047,41 +1119,25 @@ LocErrs = np.concatenate([seq_full[i][0][1] for i in range(len(seq_full))], 0)
 time_steps = np.concatenate([seq_full[i][0][2] for i in range(len(seq_full))], 0)
 masks = np.concatenate([seq_full[i][0][3] for i in range(len(seq_full))], 0)
 
+tracks.shape
 
 colors = np.array([[1,0,0],
                    [0,1,0],
-                   [0,0,1]])
-
-
-plt.figure(figsize = (15, 15))
-plt.title('ExaTrack state predictions')
-lim = 40 # MreB
-nb_rows = 8
-#IDs = random.sample(list(np.arange(len(tracks))), nb_rows**2)
-for i in range(nb_rows):
-    for j in range(nb_rows):
-        ID = i*nb_rows+j #IDs[i*nb_rows+j]
-        mask = masks[ID]
-        track = tracks[ID, mask.astype(bool)]
-        print(len(track))
-        track = track - np.mean(track,0 , keepdims = True) + [[lim*i]]
-        p = preds[ID, mask.astype(bool)]
-        p = np.clip(p, 0, 1)
-        plt.plot(np.arange(len(track))*0.02 + lim*j, track[:,0], ':k', alpha = 0.5)
-        plt.scatter(np.arange(len(track))*0.02 + lim*j, track[:,0] , c = p@colors, s = 7)
-plt.gca().set_aspect('equal', adjustable='box')
+                   [0,0,1],
+                   [1,0,1],
+                   [0,1,1]])
 
 
 # mean_preds gives better estimates at transition time points than preds (intermediate probability)
 plt.figure(figsize = (15, 15))
-lim = 40 # MreB
-nb_rows = 6
+lim = 60 # MreB
+nb_rows = 10
 plt.title('State predictions with mean_preds')
 for i in range(nb_rows):
     for j in range(nb_rows):
         ID = i*nb_rows+j #IDs[i*nb_rows+j]
         mask = masks[ID]
-        track = tracks[ID, mask.astype(bool)]
+        track = tracks[ID, mask.astype(bool), 0]
         print(len(track))
         track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
         p = preds[ID, mask.astype(bool)]
@@ -1091,6 +1147,48 @@ for i in range(nb_rows):
         plt.scatter(track[:,0], track[:,1] , c = c, s = 7)
         plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
 plt.gca().set_aspect('equal', adjustable='box')
+
+
+plt.figure()
+ID = 19 #IDs[i*nb_rows+j]
+mask = masks[ID]
+track = tracks[ID, mask.astype(bool)]
+print(len(track))
+track = track - np.mean(track,0 , keepdims = True) + [[lim*i, lim*j]]
+p = preds[ID, mask.astype(bool)]
+plt.plot(track[:,0], track[:,1], ':k', alpha = 0.5)
+c = p@colors
+c = c/np.sum(c, 1, keepdims= True)
+plt.scatter(track[:,0], track[:,1] , c = c, s = 7)
+plt.scatter(track[0,0], track[0,1] , c = 'k', s = 8, marker = 'x')
+plt.gca().set_aspect('equal', adjustable='box')
+
+
+
+
+
+fc = exatrack.MCRolloutForecaster(pred_model)
+self = fc
+
+tracks, dts, masks = (tracks[:batch_size], time_steps[:batch_size], masks[:batch_size])
+
+
+# # ---- horizon-1 validation ----
+ym, yc, sp = fc.one_step_predictive_y(tracks, dts, masks)
+
+mc = fc.rollout(tracks, dts, masks, horizon=10, nb_particles=100, return_samples=True, verbose=False)
+
+# print("analytic y_mean :", ym[:, 0])
+# print("MC       y_mean :", mc['y_mean'][:, 0])
+# print("analytic y_std  :", np.sqrt(yc[:, range(fc.O), range(fc.O)]))
+# print("MC       y_std  :", mc['y_std'][:, 0])
+#
+# ---- multi-step forecast ----
+out = fc.rollout(tracks, dts, masks, horizon=20, nb_particles=300)
+
+
+
+
 
 '''
 Determining the number of states
