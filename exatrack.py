@@ -163,7 +163,8 @@ def anomalous_diff_transition(max_track_len=50,                          # Maxim
                               nb_burning_steps=100,                       # Number of steps used before actually simulating the tracks to better simulate lifetimes and equilibrium fractions
                               nb_sub_steps=10,
                               return_list = False, 
-                              blur_ratio = 0):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
+                              blur_ratio = 0,
+                              gap_probability = 0):                           # Number of sub-steps that compose each step (to simulate continuous transitions)
     
     blur_cutoff = int(np.ceil(nb_sub_steps * blur_ratio))
     nb_states = len(velocities)
@@ -323,7 +324,7 @@ def anomalous_diff_transition(max_track_len=50,                          # Maxim
         else:
             track = np.mean(np.reshape(track, (track_len, nb_sub_steps, nb_dims))[:,:blur_cutoff], 1) + np.random.normal(0, LocErrs, (track_len, nb_dims))
             states = np.mean(np.reshape(states, (track_len, nb_sub_steps))[:,:blur_cutoff], 1)
-            
+        
         all_tracks[k, :track_len]  = track
         all_tracks[k, track_len:]  = track[-1]
         all_LocErrs[k, :track_len] = LocErrs
@@ -335,6 +336,20 @@ def anomalous_diff_transition(max_track_len=50,                          # Maxim
         all_masks[k, :track_len - 1] = 1
         all_masks[k, -1]             = 1
     
+        # ---- Detection gaps (missing localisations) ----
+        if gap_probability > 0:
+            gaps = np.random.rand(track_len) < gap_probability
+            gaps[0] = False   # keep the first frame so each track has a defined start
+            all_masks[k, :track_len][gaps] = 0
+            # Fold each gap frame's duration into the last kept frame, so the
+            # surviving dt spans the whole gap up to the next detection.
+            last_valid = 0
+            for i in range(1, track_len):
+                if gaps[i]:
+                    all_dts[k, last_valid] += all_dts[k, i]
+                else:
+                    last_valid = i
+        
     return all_tracks, all_LocErrs, all_dts, all_states, all_masks
 
 @njit
@@ -571,7 +586,6 @@ def read_table(paths, # path of the file to read or list of paths to read multip
     if zero_disp_tracks and not remove_no_disp:
         print('Warning: some tracks show no displacements. To be checked if normal or not. These tracks can be removed with remove_no_disp = True')
     return tracks, frames, track_IDs, opt_metrics
-
 
 def ExaTrack_2_DataFrame(track_list, frame_list, track_ID_list, opt_metrics, state_preds, all_masks):
     nb_rows = np.sum(all_masks).astype(int)
@@ -1475,15 +1489,16 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
     ano_rescale_per_state = ano_step_ratio * isdir_mask + (1.0 - isdir_mask)
     # Characteristic well distance for confined motion
     #well_distance = d / tf.sqrt(1-tf.math.exp(-2*l_c))    # (nb_tracks, nb_states) independent of time or localization error
-    well_distance = d / tf.sqrt(2 * (1 - tf.math.exp(-2 * l_c)))
-    
+    #well_distance = d / tf.sqrt(2 * (1 - tf.math.exp(- l_c)))
+    well_distance = d_ref / tf.sqrt(2 * l_ref_c)
+    0.4/(2*(1-np.exp(-2*0.96)))
     # Initial position spread, broadcast to full (track_len, nb_tracks, nb_states)
     initial_position_spread = tf.broadcast_to(tf.exp(log_init_spread), tf.shape(d))
     
     zeros_s = tf.zeros((track_len, nb_tracks, nb_states, nb_dims), dtype=dtype)          # scalar-per-state
     tiny    = tf.fill((track_len, nb_tracks, nb_states, nb_dims), tf.constant(1e-15, dtype=dtype))
     zeros_d = tf.zeros_like(LocErr_b)                                           # with L axis
-
+    
     #def _add_dim(g):                       # (t,n,s,4) -> (t,n,s,L,4)
     #    g = g[..., None, :]
     #    return tf.broadcast_to(g, tf.concat([tf.shape(g)[:-2], [nb_dims, 4]], 0))
@@ -1499,18 +1514,23 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
     
     # Gaussian 0 -- localisation error:   [1/LocErrs, 0, 0, 0] in case of stroboscopic imaging
     # If the motion is averaaged in time (continuous exposure for a fraction of the step time) the expected position becomes (1 - 0.5*blur_ratio) / LocErr_b, 0, 0.5*blur_ratio / LocErr_b, 0] 
-    g0 = tf.stack([(1 - 0.5 * blur_ratio) / LocErr_b, zeros_d,
-                   0.5 * blur_ratio / LocErr_b,       zeros_d], axis=-1)        # (t,n,s,L,4)
+    
+    blur_ratio_eff = blur_ratio / dt_ratio[:-1]
+    #blur_ratio_eff = tf.broadcast_to(blur_ratio_eff, LocErr_b.shape)
+    g0 = tf.stack([(1 - 0.5 * blur_ratio_eff) / LocErr_b, zeros_d,
+                   0.5 * blur_ratio_eff / LocErr_b,       zeros_d], axis=-1)        # (t,n,s,L,4)
     
     # Gaussian 1 -- diffusion + anomalous drift
     #   confined :  [(1-l)/d, l/d, -1/d, 0]
     #   directed :  [   1/d, 1/d, -1/d, 0]
-    g1_std = d * isdir_mask + d / (2 * l_c)**0.5 * (1 - tf.math.exp(-2 * l_c))**0.5 * isconf_mask
+    #g1_std = d * isdir_mask + d / (2 * l_c)**0.5 * (1 - tf.math.exp(- l_c))**0.5 * isconf_mask
+    g1_std = d * isdir_mask + d * ((1 - tf.math.exp(- 2*l_c))/(2*l_c)) ** 0.5  * isconf_mask
+    g1_std = d
     inv_d  = 1.0 / g1_std
     g1_c0  = (one_minus_l * isconf_mask + isdir_mask) * inv_d
     g1_c1  = (l * isconf_mask + isdir_mask) * inv_d + 1.1e-20
     g1     = tf.stack([g1_c0, g1_c1, -inv_d, zeros_s], axis=-1)
-
+    
     # Gaussian 2 -- anomalous-variable evolution:   [0, 1/q, 0, -1/q]  (dim-shared, broadcast to L)
     inv_q = 1.0 / q
     g2_c1 = ano_rescale_per_state * inv_q
@@ -1567,7 +1587,9 @@ def constraint_function(all_params, all_initial_params, LocErrs, dts,
 
     Log_factors = tf.reduce_sum(- tf.math.log(LocErr_b) - tf.math.log(g1_std) - tf.math.log(q), axis = -1)
 
-    initial_anomalous_factor = (- tf.math.log(d) + 0.5 * tf.math.log(2 * (1 - tf.math.exp(-2 * l_c)) + 1e-20)) * isconf_mask \
+    #initial_anomalous_factor = (- tf.math.log(d) + 0.5 * tf.math.log(2 * (1 - tf.math.exp(-2 * l_c)) + 1e-20)) * isconf_mask \
+    #                           - tf.math.log(v) * isdir_mask
+    initial_anomalous_factor = - tf.math.log(well_distance) * isconf_mask \
                                - tf.math.log(v) * isdir_mask
     initial_anomalous_factor = tf.reduce_sum(initial_anomalous_factor, axis = -1)
     
@@ -1669,7 +1691,7 @@ def RNN_cell(input_i, Prev_coefs, Prev_biases, LP, segment_len, reshaped_Log_fac
     current_states = states[:,:,-1:]
     nb_dims = input_i.shape[-2]
     nb_tracks = LP.shape[0]
-    nb_hidden_vars = Prev_coefs.shape[3]
+    nb_hidden_vars = Prev_coefs.shape[4]
     nb_states = reccurent_hidden_var_coefs.shape[2]
     sequence_length = LP.shape[1]//nb_states
     
@@ -3361,7 +3383,7 @@ class get_parameters(tf.keras.callbacks.Callback):
         
         model_types = weights[0][:, -1].numpy().astype(int)
         model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-        params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 1])*(1-weights[0][:, -1]) + 2**0.5*tf.exp(weights[0][:, 1])*weights[0][:, -1], 4)), 'Localization errors': list(np.round(np.exp(weights[0][:, 3:-1]),3)), 'd': list(np.round(np.exp(weights[0][:, 0]), 3)), 'anomalous variation': list(np.round(np.exp(weights[0][:, 2]), 5)), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
+        params = {'Model types': model_types_str, 'anomalous factors': list(np.round(tf.sigmoid(weights[0][:, 1])*(1-weights[0][:, -1]) + 2**0.5*tf.exp(weights[0][:, 1])*weights[0][:, -1], 4)), 'Localization errors': list(np.round(np.exp(weights[0][:, 3:-1]),3)), 'd': list(np.round(np.exp(weights[0][:, 0]), 4)), 'anomalous variation': list(np.round(np.exp(weights[0][:, 2]), 5)), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': list(np.round(tf.math.softmax(weights[2][0]), 3))}
         print(params)
 
 def get_model_params(model, track_segmentation = True):
@@ -3382,9 +3404,9 @@ def get_model_params(model, track_segmentation = True):
     transition_rates = transition_rates.numpy()
     model_types = weights[0][:, -1].numpy().astype(int)
     model_types_str = np.array(['Confined motion', 'Directed motion'])[model_types]
-    anomalous_factors = tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 2])*weights[0][:, 4]
+    anomalous_factors = tf.sigmoid(weights[0][:, 1])*(1-weights[0][:, 4]) + 2**0.5*tf.exp(weights[0][:, 1])*weights[0][:, -1]
     anomalous_factors = anomalous_factors.numpy()
-    param_dict = {'Model types': model_types_str, 'anomalous factors': anomalous_factors, 'Localization errors': np.exp(weights[0][:, 0]), 'd': np.exp(weights[0][:, 1]), 'q': np.exp(weights[0][:, 3]), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': tf.math.softmax(weights[2][0]).numpy()}
+    param_dict = {'Model types': model_types_str, 'anomalous factors': anomalous_factors, 'Localization errors': np.exp(weights[0][:, 3:-1]), 'd': np.exp(weights[0][:, 0]), 'q': np.exp(weights[0][:, 2]), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': tf.math.softmax(weights[2][0]).numpy()}
     return param_dict
 
 def equilibrium_distribution(P):
@@ -3419,9 +3441,14 @@ def equilibrium_distribution(P):
     return pi
 
 def model_to_DataFrame(model, dt):
+    '''
+    To fix
+    '''
     weights = model.weights
     nb_states = weights[0].shape[0]
-    params = {'anomalous factors': (tf.sigmoid(weights[0][:, 2])*(1-weights[0][:, 4]) + tf.exp(weights[0][:, 2])*weights[0][:, 4]).numpy(), 'Localization errors': np.exp(weights[0][:, 0]), 'd':np.exp(weights[0][:, 1]), 'transition rates': tf.math.softmax(weights[4], axis = 1).numpy(), 'transition shapes': tf.math.exp(weights[5]).numpy(), 'Fractions': (tf.math.softmax(weights[2][0])).numpy()}
+    params = get_model_params(model, track_segmentation=True)
+    param_dict = {'Model types': model_types_str, 'anomalous factors': anomalous_factors, 'Localization errors': np.exp(weights[0][:, 3:-1]), 'd': np.exp(weights[0][:, 0]), 'q': np.exp(weights[0][:, 2]), 'transition rates': transition_rates, 'transition shapes': transition_shapes, 'Fractions': tf.math.softmax(weights[2][0]).numpy()}
+
     colnames = []
     data = []
     for state in range(nb_states):

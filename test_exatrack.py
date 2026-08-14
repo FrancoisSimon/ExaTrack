@@ -31,8 +31,8 @@ sys.path.insert(0, rootdir)
 import exatrack
 from glob import glob
 
-track_len = 60
-nb_tracks = 1000
+track_len = 100
+nb_tracks = 500
 reference_dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
@@ -43,6 +43,7 @@ Ds = np.array([0.0, 1])
 dt = 0.02
 ds = (2*Ds*dt)**0.5
 velocity = 0.05
+blur_ratio = 1
 
 tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_transition(
     max_track_len=track_len,
@@ -56,17 +57,18 @@ tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_tr
     conf_forces=np.array([0.0, 0.2]),
     conf_Ds=np.array([0.0, 0.0]),         # No diffusion of confinement center
     conf_dists=np.array([0.0, 0.0]),
-    transition_matrix=np.array([[0.00, 0.5],   # State 0 -> State 1
-                                [0.5, 0.00]]),
+    transition_matrix=np.array([[0.00, 0.3],   # State 0 -> State 1
+                                [0.3, 0.00]]),
     shape_matrix=np.array([[0, 5],
                            [5, 0]]),
     LocErr_std = 0.004,
     field_of_view=np.array([-1, 1]),
     dt=dt,
-    dt_std = 0.002,
+    dt_std = 0.0,
     nb_sub_steps=10,  # Sub-steps for accurate simulation
     nb_burning_steps=0,
-    bleaching_rate = 0.0001)
+    bleaching_rate = 0.0001,
+    blur_ratio = blur_ratio)
 
 # Plot tracks
 plt.figure(figsize = (15, 15))
@@ -95,8 +97,9 @@ batch_size = 50
 # Initialize with generic guesses (Localization error, diffusion length, anomalous parameter, change of anomalous parameter)
 # Here, we are going to run the model with LocErr_type = 'Linear' so the localization error parameter should be initialized at 1
 
-params = np.array([[np.log(1), np.log(0.01), np.log(0.01), np.log(0.0002), 1],
-                   [np.log(1), np.log(0.1), np.log(0.1), np.log(0.001), 0]])
+params = np.array([[np.log(0.01), np.log(0.01), np.log(0.0002),np.log(1),  1],
+                   [np.log(0.10), np.log(0.10), np.log(0.0010),np.log(1),  0]])
+
 nb_states = len(params)
 
 initial_params = np.array([[np.log(60)]]*nb_states, dtype='float64')
@@ -172,7 +175,8 @@ model, pred_model = exatrack.build_segment_model(segment_length, # maximum numbe
                 vary_initial_fractions = vary_initial_fractions,
                 vary_transition_shapes = vary_transition_shapes,
                 vary_transition_rates = vary_transition_rates,
-                LocErr_type = 'Linear')
+                LocErr_type = 'Linear',
+                blur_ratio=blur_ratio)
 
 device = '/GPU:0'
 verbose = 1
@@ -932,7 +936,7 @@ plt.gca().set_aspect('equal', adjustable='box')
 
 
 '''
-Test exatrck with motion blur and added dimension on the coefficients for the spatial dimensions
+Test exatrack with motion blur and added dimension on the coefficients for the spatial dimensions
 '''
 
 import numpy as np
@@ -952,7 +956,7 @@ except:
 sys.path.insert(0, rootdir)
 #import exatrack_var_shape as exatrack
 #import exatrack_var_shape as exatrack
-import exatrack_dim_LocErrs as exatrack
+import exatrack
 
 from glob import glob
 
@@ -969,6 +973,8 @@ dt = 0.02
 ds = (2*Ds*dt)**0.5
 velocity = 0.05
 
+blur_ratio = 1
+
 tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_transition(
     max_track_len=track_len,
     nb_tracks=nb_tracks,
@@ -978,8 +984,8 @@ tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_tr
     nb_dims=nb_dims,
     velocities=np.array([velocity, 0.0]),      # No directed motion
     angular_Ds=np.array([0.0, 0.0]),      # No rotational diffusion
-    conf_forces=np.array([0.0, 0.]),
-    conf_Ds=np.array([0.0, 0.0]),         # No diffusion of confinement center
+    conf_forces=np.array([0.0, 0.2]),
+    conf_Ds=np.array([0.0, 0.16]),         # No diffusion of confinement center
     conf_dists=np.array([0.0, 0.0]),
     transition_matrix=np.array([[0.00, 0.5],   # State 0 -> State 1
                                 [0.5, 0.00]]),
@@ -988,11 +994,12 @@ tracks, all_LocErrs, all_dts, all_states, all_masks = exatrack.anomalous_diff_tr
     LocErr_std = 0.004,
     field_of_view=np.array([-1, 1]),
     dt=dt,
-    dt_std = 0.002,
+    dt_std = 0.00,
     nb_sub_steps=100,  # Sub-steps for accurate simulation
     nb_burning_steps=0,
     bleaching_rate = 0.0001,
-    blur_ratio = 0.5)
+    blur_ratio = blur_ratio,
+    gap_probability = 0.1)
 
 # Plot tracks
 plt.figure(figsize = (15, 15))
@@ -1080,7 +1087,6 @@ decay_threshold = epoch_decay*nb_batches
 decay_rate = 0.005
 verbose = 1
 LocErr_type = 'Linear'
-blur_ratio = 0.5
 nb_LocErr_dims = 0
 
 model, pred_model = exatrack.build_segment_model(segment_length, # maximum number of time points in the input tracks

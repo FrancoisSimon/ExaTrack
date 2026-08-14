@@ -1,0 +1,2 @@
+model_checkpoint_path: "C9_PBP2MutA22_60ms_4_weights.tf"
+all_model_checkpoint_paths: "C9_PBP2MutA22_60ms_4_weights.tf"
