@@ -25,14 +25,17 @@ try:
 except:
     # add the absolute path if you are running the script line by line
     rootdir = r"C:\Users\Franc\Data\GitHub\ExaTrack"
+    rootdir = r"C:\Users\Franc\Data\ExaTrack"
+
 sys.path.insert(0, rootdir)
 #import exatrack_var_shape as exatrack
 #import exatrack_var_shape as exatrack
-import exatrack
+#import exatrack
+import exatrack_c as exatrack
 from glob import glob
 
 track_len = 100
-nb_tracks = 500
+nb_tracks = 1000
 reference_dt = 0.02                 # Time interval between frames (seconds)
 LocErr = 0.02             # Localization error (µm)
 nb_dims = 2               # Number of spatial dimensions
@@ -90,7 +93,7 @@ LocErr_list = [all_LocErrs[i, all_masks[i].astype(bool)]  for i in range(len(tra
 # LocErr_list = None 
 dt_list = [all_dts[i, all_masks[i].astype(bool)]  for i in range(len(tracks))]
 
-batch_size = 50
+batch_size = 1000
 
 # Prepare parameters for a 4 states model
 
@@ -134,9 +137,9 @@ device = '/CPU:0'
 
 estimated_density = 0.00001 # Negligible density
 nb_dims = 2
-sequence_length = 5
+sequence_length = 10
 max_linking_distance = 1
-segment_length = 20
+segment_length = 10
 
 seq = exatrack.TrackSegmentSequence(track_list,
                                     LocErr_list=LocErr_list, 
@@ -178,7 +181,6 @@ model, pred_model = exatrack.build_segment_model(segment_length, # maximum numbe
                 LocErr_type = 'Linear',
                 blur_ratio=blur_ratio)
 
-device = '/GPU:0'
 verbose = 1
 print('Final learning rate:', learning_rate*np.exp(-max(0, epochs-epoch_decay)*decay_rate*nb_batches))
 
@@ -190,8 +192,7 @@ model.compile(loss=MLE_loss, optimizer=optimizer, jit_compile = False)
 #preds = model.predict(seq)
 #log_likelihood = exatrack.MLE_loss(preds, preds)
 
-with tf.device(device):
-    history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
+history = model.fit(seq, epochs = epochs, callbacks=[exatrack.get_parameters(track_segmentation = True)], shuffle=False, verbose = verbose) #, callbacks  = [l_callback])
 
 '''
 Results
