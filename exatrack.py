@@ -4423,7 +4423,7 @@ def get_number_of_states(track_list,
      
     nb_batches = len(seq)
     #tracks = np.concatenate([seq[i][0][0] for i in range(nb_batches)], axis = 0)
-    mask_array = np.concatenate([seq[i][0][1] for i in range(nb_batches)], axis = 0)
+    mask_array = np.concatenate([seq[i][0][3] for i in range(nb_batches)], axis = 0)
     nb_data_points = np.sum(mask_array[:, 1:])
     #isfirst =  np.concatenate([seq[i][0][2] for i in range(nb_batches)], axis = 0)
     #inputs = (tracks, track_masks, isfirst)
@@ -4563,7 +4563,7 @@ def get_number_of_states(track_list,
                 fractions_softmax = tf.math.softmax(fitted_initial_fractions[0])
                 reduced_fractions_values = fractions_softmax.numpy()[keep_states+[current_nb_states]]
                 reduced_fractions_values = reduced_fractions_values / reduced_fractions_values.sum()
-                reduced_initial_fractions = np.log(reduced_fractions_values / (1 - reduced_fractions_values)).reshape(1, -1)
+                reduced_initial_fractions = np.log(reduced_fractions_values).reshape(1, -1)
                 
                 # Reduce transition matrices
                 reduced_transition_rates = fitted_transition_rates[np.ix_(keep_states, keep_states)]
@@ -4613,7 +4613,7 @@ def get_number_of_states(track_list,
             fractions_softmax = tf.math.softmax(fitted_initial_fractions[0])
             reduced_fractions_values = fractions_softmax.numpy()[keep_states + [current_nb_states]]
             reduced_fractions_values = reduced_fractions_values / reduced_fractions_values.sum()
-            current_initial_fractions = np.log(reduced_fractions_values / (1 - reduced_fractions_values)).reshape(1, -1)
+            current_initial_fractions = np.log(reduced_fractions_values).reshape(1, -1)
             
             current_transition_rates = fitted_transition_rates[np.ix_(keep_states, keep_states)]
             current_transition_shapes = fitted_transition_shapes[np.ix_(keep_states, keep_states)]
